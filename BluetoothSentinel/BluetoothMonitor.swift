@@ -53,6 +53,8 @@ struct DetectedDevice: Identifiable, Equatable {
 }
 
 final class BluetoothMonitor: NSObject, ObservableObject {
+    private static let autoRememberInterval: TimeInterval = 30
+
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
     @Published private(set) var bluetoothState: CBManagerState = .unknown
     @Published private(set) var devices: [DetectedDevice] = []
@@ -69,6 +71,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var alertedDeviceIDs: Set<String> = []
+    private var autoRememberTimer: Timer?
 
     override init() {
         let storedIDs = UserDefaults.standard.stringArray(forKey: knownDevicesKey) ?? []
@@ -84,6 +87,11 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             ]
         )
         startHeadingUpdatesIfPossible()
+        startAutoRememberTimer()
+    }
+
+    deinit {
+        autoRememberTimer?.invalidate()
     }
 
     var knownDeviceCount: Int {
@@ -166,6 +174,36 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         soundPlayer.playAlert()
     }
 
+    private func startAutoRememberTimer() {
+        autoRememberTimer?.invalidate()
+        autoRememberTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
+            self?.rememberLongVisibleUnknownDevices()
+        }
+    }
+
+    private func rememberLongVisibleUnknownDevices(now: Date = Date()) {
+        var changed = false
+
+        for id in deviceOrder {
+            guard var device = devicesByID[id],
+                  !device.isKnown,
+                  now.timeIntervalSince(device.firstSeen) >= Self.autoRememberInterval
+            else {
+                continue
+            }
+
+            knownDeviceIDs.insert(id)
+            device.isKnown = true
+            devicesByID[id] = device
+            changed = true
+        }
+
+        guard changed else { return }
+
+        persistKnownDevices()
+        publishDeviceList()
+    }
+
     private func startHeadingUpdatesIfPossible() {
         guard CLLocationManager.headingAvailable() else { return }
 
@@ -240,7 +278,11 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             updateDirectionEstimate(for: &existing)
             existing.lastSeen = now
             existing.advertisement = summary
-            existing.isKnown = isKnown
+            existing.isKnown = isKnown || now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval
+            if existing.isKnown {
+                knownDeviceIDs.insert(id)
+                persistKnownDevices()
+            }
             devicesByID[id] = existing
         } else {
             let newDevice = DetectedDevice(
