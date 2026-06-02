@@ -24,7 +24,7 @@ struct ContentView: View {
                         )
                     } else {
                         ForEach(monitor.devices) { device in
-                            DeviceRow(device: device) {
+                            DeviceRow(device: device, fieldModeEnabled: monitor.fieldModeEnabled) {
                                 monitor.trustDevice(device)
                             }
                         }
@@ -68,6 +68,9 @@ struct ContentView: View {
                     Text(monitor.isScanning ? "Сканирование активно" : "Сканирование остановлено")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
+                    Text(monitor.fieldModeEnabled ? "Полевой режим: максимум дальности" : "Обычный режим")
+                        .font(.caption.bold())
+                        .foregroundStyle(monitor.fieldModeEnabled ? .red : .secondary)
                 }
 
                 Spacer()
@@ -95,6 +98,10 @@ struct ContentView: View {
 
             Toggle(isOn: $monitor.alertsEnabled) {
                 Label("Звуковой сигнал", systemImage: "bell.and.waves.left.and.right.fill")
+            }
+
+            Toggle(isOn: $monitor.fieldModeEnabled) {
+                Label("Полевой режим", systemImage: "shield.lefthalf.filled")
             }
 
             Toggle(isOn: $monitor.vibrationOnlyEnabled) {
@@ -125,6 +132,7 @@ struct ContentView: View {
 
 struct DeviceRow: View {
     let device: DetectedDevice
+    let fieldModeEnabled: Bool
     let trustDevice: () -> Void
 
     var body: some View {
@@ -149,6 +157,7 @@ struct DeviceRow: View {
                     Text(device.estimatedDistanceText)
                         .font(.caption.bold().monospacedDigit())
                         .foregroundStyle(distanceColor)
+                    DetectionZoneBadge(zone: device.detectionZone, isUnknown: device.trustState == .unknown, fieldModeEnabled: fieldModeEnabled)
                     DirectionBadge(device: device)
                     Label(trustStatusText, systemImage: trustStatusImage)
                         .font(.caption2.bold())
@@ -260,6 +269,38 @@ struct DeviceKindBadge: View {
         case .keyboardMouse, .smartHome:
             return .green
         case .appleDevice:
+            return .secondary
+        case .unknown:
+            return .secondary
+        }
+    }
+}
+
+struct DetectionZoneBadge: View {
+    let zone: DetectionZone
+    let isUnknown: Bool
+    let fieldModeEnabled: Bool
+
+    var body: some View {
+        Label(zone.title, systemImage: zone.symbolName)
+            .font(.caption2.bold())
+            .foregroundStyle(color)
+            .accessibilityLabel("Зона обнаружения: \(zone.title)")
+    }
+
+    private var color: Color {
+        if fieldModeEnabled, isUnknown {
+            return .red
+        }
+
+        switch zone {
+        case .immediate:
+            return .red
+        case .close:
+            return .orange
+        case .far:
+            return .blue
+        case .edge:
             return .secondary
         case .unknown:
             return .secondary

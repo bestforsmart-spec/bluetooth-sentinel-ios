@@ -67,6 +67,56 @@ struct DetectedDevice: Identifiable, Equatable {
     var directionArrowDegrees: Double? {
         strongestHeadingDegrees
     }
+
+    var detectionZone: DetectionZone {
+        DetectionZone.zone(forMeters: estimatedDistanceMeters)
+    }
+}
+
+enum DetectionZone: Equatable {
+    case immediate
+    case close
+    case far
+    case edge
+    case unknown
+
+    static func zone(forMeters meters: Double?) -> DetectionZone {
+        guard let meters else { return .unknown }
+        if meters < 5 { return .immediate }
+        if meters < 15 { return .close }
+        if meters < 60 { return .far }
+        return .edge
+    }
+
+    var title: String {
+        switch self {
+        case .immediate:
+            return "КРИТИЧЕСКИ БЛИЗКО"
+        case .close:
+            return "БЛИЗКО"
+        case .far:
+            return "ДАЛЬНЯЯ ЗОНА"
+        case .edge:
+            return "ПРЕДЕЛ ПРИЁМА"
+        case .unknown:
+            return "ДАЛЬНОСТЬ НЕЯСНА"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .immediate:
+            return "exclamationmark.octagon.fill"
+        case .close:
+            return "exclamationmark.triangle.fill"
+        case .far:
+            return "antenna.radiowaves.left.and.right"
+        case .edge:
+            return "dot.radiowaves.left.and.right"
+        case .unknown:
+            return "questionmark.circle.fill"
+        }
+    }
 }
 
 enum DeviceKind: Equatable {
@@ -143,7 +193,10 @@ enum DeviceKind: Equatable {
 
 final class BluetoothMonitor: NSObject, ObservableObject {
     private static let autoRememberInterval: TimeInterval = 10
+    private static let fieldRepeatAlertInterval: TimeInterval = 20
+    private static let fieldScanRefreshInterval: TimeInterval = 25
     private static let alertsEnabledKey = "alertsEnabled"
+    private static let fieldModeEnabledKey = "fieldModeEnabled"
     private static let vibrationOnlyEnabledKey = "vibrationOnlyEnabled"
 
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
@@ -155,6 +208,19 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published var alertsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(alertsEnabled, forKey: Self.alertsEnabledKey)
+        }
+    }
+    @Published var fieldModeEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(fieldModeEnabled, forKey: Self.fieldModeEnabledKey)
+            if fieldModeEnabled {
+                quietDeviceIDs.removeAll()
+                alertedDeviceIDs.removeAll()
+                lastAlertTimesByID.removeAll()
+                persistDeviceLists()
+                refreshTrustStates()
+                startScanning()
+            }
         }
     }
     @Published var vibrationOnlyEnabled: Bool {
@@ -175,7 +241,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var alertedDeviceIDs: Set<String> = []
+    private var lastAlertTimesByID: [String: Date] = [:]
     private var autoRememberTimer: Timer?
+    private var scanRefreshTimer: Timer?
     private var scanningRequested = true
 
     override init() {
@@ -186,6 +254,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         self.trustedDeviceIDs = Set(storedTrustedIDs)
         self.quietDeviceIDs = Set(storedQuietIDs).subtracting(storedTrustedIDs)
         self.alertsEnabled = UserDefaults.standard.object(forKey: Self.alertsEnabledKey) as? Bool ?? true
+        self.fieldModeEnabled = UserDefaults.standard.object(forKey: Self.fieldModeEnabledKey) as? Bool ?? true
         self.vibrationOnlyEnabled = UserDefaults.standard.object(forKey: Self.vibrationOnlyEnabledKey) as? Bool ?? false
         super.init()
         self.locationManager.delegate = self
@@ -200,10 +269,12 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         notificationCenter.requestAuthorization()
         startHeadingUpdatesIfPossible()
         startAutoRememberTimer()
+        startScanRefreshTimer()
     }
 
     deinit {
         autoRememberTimer?.invalidate()
+        scanRefreshTimer?.invalidate()
     }
 
     var trustedDeviceCount: Int {
@@ -258,6 +329,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         trustedDeviceIDs.removeAll()
         quietDeviceIDs.removeAll()
         alertedDeviceIDs.removeAll()
+        lastAlertTimesByID.removeAll()
         persistDeviceLists()
         refreshTrustStates()
     }
@@ -267,6 +339,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         deviceOrder.removeAll()
         devices.removeAll()
         alertedDeviceIDs.removeAll()
+        lastAlertTimesByID.removeAll()
     }
 
     func testAlert() {
@@ -303,7 +376,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             return .trusted
         }
 
-        if quietDeviceIDs.contains(id) {
+        if !fieldModeEnabled, quietDeviceIDs.contains(id) {
             return .quiet
         }
 
@@ -314,10 +387,21 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devices = deviceOrder.compactMap { devicesByID[$0] }
     }
 
-    private func handleNewUnknownDevice(_ device: DetectedDevice) {
-        guard alertsEnabled, !alertedDeviceIDs.contains(device.id) else { return }
-        alertedDeviceIDs.insert(device.id)
-        lastAlertAt = Date()
+    private func handleUnknownDeviceAlert(_ device: DetectedDevice, now: Date = Date()) {
+        guard alertsEnabled else { return }
+
+        if fieldModeEnabled {
+            if let lastAlert = lastAlertTimesByID[device.id],
+               now.timeIntervalSince(lastAlert) < Self.fieldRepeatAlertInterval {
+                return
+            }
+        } else {
+            guard !alertedDeviceIDs.contains(device.id) else { return }
+            alertedDeviceIDs.insert(device.id)
+        }
+
+        lastAlertTimesByID[device.id] = now
+        lastAlertAt = now
 
         if UIApplication.shared.applicationState == .active {
             playConfiguredForegroundAlert()
@@ -344,7 +428,26 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
     }
 
+    private func startScanRefreshTimer() {
+        scanRefreshTimer?.invalidate()
+        scanRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.fieldScanRefreshInterval, repeats: true) { [weak self] _ in
+            self?.refreshFieldScanIfNeeded()
+        }
+    }
+
+    private func refreshFieldScanIfNeeded() {
+        guard fieldModeEnabled, scanningRequested, bluetoothState == .poweredOn else { return }
+        centralManager?.stopScan()
+        centralManager?.scanForPeripherals(
+            withServices: nil,
+            options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+        )
+        isScanning = true
+    }
+
     private func rememberLongVisibleUnknownDevices(now: Date = Date()) {
+        guard !fieldModeEnabled else { return }
+
         var changed = false
 
         for id in deviceOrder {
@@ -444,13 +547,17 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             existing.lastSeen = now
             existing.advertisement = summary
             existing.trustState = currentTrustState
-            if existing.trustState == .unknown,
+            if !fieldModeEnabled,
+               existing.trustState == .unknown,
                now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval {
                 quietDeviceIDs.insert(id)
                 existing.trustState = .quiet
                 persistDeviceLists()
             }
             devicesByID[id] = existing
+            if existing.trustState == .unknown, fieldModeEnabled {
+                handleUnknownDeviceAlert(existing, now: now)
+            }
         } else {
             let newDevice = DetectedDevice(
                 id: id,
@@ -469,7 +576,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             devicesByID[id] = newDevice
             deviceOrder.append(id)
             if currentTrustState == .unknown {
-                handleNewUnknownDevice(newDevice)
+                handleUnknownDeviceAlert(newDevice, now: now)
             }
         }
 
