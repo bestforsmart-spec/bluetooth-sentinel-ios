@@ -5,14 +5,8 @@ import Foundation
 final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private var players: [AVAudioPlayer] = []
 
-    func playAlert() {
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
-            try session.setActive(true)
-        } catch {
-            // The generated tone can still play in many foreground cases.
-        }
+    func playDiscoveryAlert() {
+        configureAudioSession()
 
         Task { @MainActor in
             playTone(frequency: 1320, duration: 0.16)
@@ -21,11 +15,43 @@ final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
         }
     }
 
+    func playApproachAlert() {
+        configureAudioSession()
+
+        Task { @MainActor in
+            playTone(frequency: 740, duration: 0.12)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            playTone(frequency: 980, duration: 0.12)
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            playTone(frequency: 740, duration: 0.20)
+        }
+    }
+
     func playVibration() {
         Task { @MainActor in
             AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
             try? await Task.sleep(nanoseconds: 520_000_000)
             AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+        }
+    }
+
+    func playApproachVibration() {
+        Task { @MainActor in
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+        }
+    }
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            // The generated tone can still play in many foreground cases.
         }
     }
 

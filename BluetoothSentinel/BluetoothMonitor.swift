@@ -6,6 +6,7 @@ import UserNotifications
 
 enum DeviceTrustState: Equatable {
     case unknown
+    case known
     case quiet
     case trusted
 }
@@ -227,6 +228,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
     private static let vibrationOnlyEnabledKey = "vibrationOnlyEnabled"
+    private static let knownDevicesKey = "knownObservedBluetoothDeviceIDs"
 
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
     @Published private(set) var bluetoothState: CBManagerState = .unknown
@@ -244,7 +246,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             UserDefaults.standard.set(fieldModeEnabled, forKey: Self.fieldModeEnabledKey)
             if fieldModeEnabled {
                 quietDeviceIDs.removeAll()
-                alertedDeviceIDs.removeAll()
                 approachAlertedDeviceIDs.removeAll()
                 approachReferenceDistanceByID.removeAll()
                 approachReferenceRSSIByID.removeAll()
@@ -268,10 +269,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private let locationManager = CLLocationManager()
     private var centralManager: CBCentralManager?
     private var quietDeviceIDs: Set<String>
+    private var knownDeviceIDs: Set<String>
     private var trustedDeviceIDs: Set<String>
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
-    private var alertedDeviceIDs: Set<String> = []
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
     private var approachReferenceRSSIByID: [String: Double] = [:]
@@ -285,7 +286,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             ?? UserDefaults.standard.stringArray(forKey: legacyKnownDevicesKey)
             ?? []
         let storedQuietIDs = UserDefaults.standard.stringArray(forKey: quietDevicesKey) ?? []
+        let storedKnownIDs = UserDefaults.standard.stringArray(forKey: Self.knownDevicesKey) ?? []
         self.trustedDeviceIDs = Set(storedTrustedIDs)
+        self.knownDeviceIDs = Set(storedKnownIDs).union(storedTrustedIDs)
         self.quietDeviceIDs = Set(storedQuietIDs).subtracting(storedTrustedIDs)
         self.alertsEnabled = UserDefaults.standard.object(forKey: Self.alertsEnabledKey) as? Bool ?? true
         self.fieldModeEnabled = UserDefaults.standard.object(forKey: Self.fieldModeEnabledKey) as? Bool ?? true
@@ -315,6 +318,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     var trustedDeviceCount: Int {
         trustedDeviceIDs.count
+    }
+
+    var knownDeviceCount: Int {
+        knownDeviceIDs.count
+    }
+
+    var approachingDeviceCount: Int {
+        devices.filter { $0.approachState == .approaching }.count
     }
 
     var unknownDeviceCount: Int {
@@ -347,6 +358,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     func trustAllVisibleDevices() {
         for id in devicesByID.keys {
+            knownDeviceIDs.insert(id)
             trustedDeviceIDs.insert(id)
             quietDeviceIDs.remove(id)
         }
@@ -355,6 +367,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     func trustDevice(_ device: DetectedDevice) {
+        knownDeviceIDs.insert(device.id)
         trustedDeviceIDs.insert(device.id)
         quietDeviceIDs.remove(device.id)
         persistDeviceLists()
@@ -364,7 +377,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     func resetTrustedDevices() {
         trustedDeviceIDs.removeAll()
         quietDeviceIDs.removeAll()
-        alertedDeviceIDs.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
         approachReferenceRSSIByID.removeAll()
@@ -376,7 +388,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devicesByID.removeAll()
         deviceOrder.removeAll()
         devices.removeAll()
-        alertedDeviceIDs.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
         approachReferenceRSSIByID.removeAll()
@@ -401,6 +412,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private func persistDeviceLists() {
         UserDefaults.standard.set(Array(trustedDeviceIDs).sorted(), forKey: trustedDevicesKey)
         UserDefaults.standard.set(Array(trustedDeviceIDs).sorted(), forKey: legacyKnownDevicesKey)
+        UserDefaults.standard.set(Array(knownDeviceIDs).sorted(), forKey: Self.knownDevicesKey)
         UserDefaults.standard.set(Array(quietDeviceIDs).sorted(), forKey: quietDevicesKey)
     }
 
@@ -420,6 +432,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             return .quiet
         }
 
+        if knownDeviceIDs.contains(id) {
+            return .known
+        }
+
         return .unknown
     }
 
@@ -427,39 +443,34 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devices = deviceOrder.compactMap { devicesByID[$0] }
     }
 
-    private func handleUnknownDeviceAlert(_ device: DetectedDevice, reason: BluetoothAlertReason, now: Date = Date()) {
-        guard alertsEnabled else { return }
+    private func rememberKnownDevice(_ id: String) {
+        guard knownDeviceIDs.insert(id).inserted else { return }
+        persistDeviceLists()
+    }
 
-        switch reason {
-        case .firstSeen:
-            guard !alertedDeviceIDs.contains(device.id) else {
-                return
-            }
-            alertedDeviceIDs.insert(device.id)
-        case .approaching:
-            guard fieldModeEnabled, !approachAlertedDeviceIDs.contains(device.id) else {
-                return
-            }
-            approachAlertedDeviceIDs.insert(device.id)
+    private func handleApproachAlert(_ device: DetectedDevice, now: Date = Date()) {
+        guard alertsEnabled, fieldModeEnabled, !approachAlertedDeviceIDs.contains(device.id) else {
+            return
         }
 
+        approachAlertedDeviceIDs.insert(device.id)
         lastAlertAt = now
 
         if UIApplication.shared.applicationState == .active {
             playConfiguredForegroundAlert()
         } else {
-            notificationCenter.postDeviceAlert(device, reason: reason, vibrationOnly: vibrationOnlyEnabled)
+            notificationCenter.postDeviceAlert(device, vibrationOnly: vibrationOnlyEnabled)
             if vibrationOnlyEnabled {
-                soundPlayer.playVibration()
+                soundPlayer.playApproachVibration()
             }
         }
     }
 
     private func playConfiguredForegroundAlert() {
         if vibrationOnlyEnabled {
-            soundPlayer.playVibration()
+            soundPlayer.playApproachVibration()
         } else {
-            soundPlayer.playAlert()
+            soundPlayer.playApproachAlert()
         }
     }
 
@@ -505,16 +516,16 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
     }
 
-    private func updateApproachState(for device: inout DetectedDevice, now: Date) -> BluetoothAlertReason? {
-        guard fieldModeEnabled, device.trustState == .unknown else {
-            return nil
+    private func updateApproachState(for device: inout DetectedDevice, now: Date) -> Bool {
+        guard fieldModeEnabled, device.trustState == .unknown || device.trustState == .known else {
+            return false
         }
 
         seedApproachReferenceIfNeeded(for: device)
 
         guard !approachAlertedDeviceIDs.contains(device.id),
               now.timeIntervalSince(device.firstSeen) >= Self.approachMinimumObservationAge else {
-            return nil
+            return false
         }
 
         let referenceRSSI = approachReferenceRSSIByID[device.id] ?? device.smoothedRSSI
@@ -529,7 +540,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
         if rssiGain >= Self.approachRSSIGainThreshold || distanceShowsApproach {
             device.approachState = .approaching
-            return .approaching
+            return true
         }
 
         if device.smoothedRSSI < referenceRSSI - 3 {
@@ -542,7 +553,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             approachReferenceDistanceByID[device.id] = currentDistance
         }
 
-        return nil
+        return false
     }
 
     private func rememberLongVisibleUnknownDevices(now: Date = Date()) {
@@ -558,8 +569,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 continue
             }
 
-            quietDeviceIDs.insert(id)
-            device.trustState = .quiet
+            knownDeviceIDs.insert(id)
+            device.trustState = .known
             devicesByID[id] = device
             changed = true
         }
@@ -578,7 +589,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
         for id in staleIDs {
             devicesByID.removeValue(forKey: id)
-            alertedDeviceIDs.remove(id)
             approachAlertedDeviceIDs.remove(id)
             approachReferenceDistanceByID.removeValue(forKey: id)
             approachReferenceRSSIByID.removeValue(forKey: id)
@@ -654,7 +664,11 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             ?? "Без имени"
         let summary = AdvertisementFormatter.summary(from: advertisementData)
         let deviceKind = DeviceKindClassifier.classify(name: name, advertisementData: advertisementData)
-        let currentTrustState = trustState(for: id)
+        var currentTrustState = trustState(for: id)
+        if currentTrustState == .unknown {
+            rememberKnownDevice(id)
+            currentTrustState = .known
+        }
 
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
@@ -669,14 +683,14 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             if !fieldModeEnabled,
                existing.trustState == .unknown,
                now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval {
-                quietDeviceIDs.insert(id)
-                existing.trustState = .quiet
+                knownDeviceIDs.insert(id)
+                existing.trustState = .known
                 persistDeviceLists()
             }
-            let alertReason = updateApproachState(for: &existing, now: now)
+            let isApproaching = updateApproachState(for: &existing, now: now)
             devicesByID[id] = existing
-            if let alertReason {
-                handleUnknownDeviceAlert(existing, reason: alertReason, now: now)
+            if isApproaching {
+                handleApproachAlert(existing, now: now)
             }
         } else {
             let newDevice = DetectedDevice(
@@ -692,14 +706,11 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 advertisement: summary,
                 trustState: currentTrustState,
                 approachState: .watching,
-                alertCount: currentTrustState == .unknown ? 1 : 0
+                alertCount: 0
             )
             devicesByID[id] = newDevice
             deviceOrder.append(id)
             seedApproachReferenceIfNeeded(for: newDevice)
-            if currentTrustState == .unknown {
-                handleUnknownDeviceAlert(newDevice, reason: .firstSeen, now: now)
-            }
         }
 
         publishDeviceList()
@@ -734,10 +745,10 @@ final class BluetoothAlertNotificationCenter {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    func postDeviceAlert(_ device: DetectedDevice, reason: BluetoothAlertReason, vibrationOnly: Bool) {
+    func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
         let content = UNMutableNotificationContent()
-        content.title = reason.notificationTitle
-        content.body = reason.notificationBody(for: device)
+        content.title = "Устройство приближается"
+        content.body = "\(device.name): сигнал усилился, \(device.estimatedDistanceText), \(device.directionName)"
         content.categoryIdentifier = "bluetooth-device-alert"
         if !vibrationOnly {
             content.sound = .default
@@ -749,29 +760,6 @@ final class BluetoothAlertNotificationCenter {
             trigger: nil
         )
         center.add(request)
-    }
-}
-
-enum BluetoothAlertReason {
-    case firstSeen
-    case approaching
-
-    var notificationTitle: String {
-        switch self {
-        case .firstSeen:
-            return "Новое Bluetooth-устройство"
-        case .approaching:
-            return "Устройство приближается"
-        }
-    }
-
-    func notificationBody(for device: DetectedDevice) -> String {
-        switch self {
-        case .firstSeen:
-            return "\(device.name): \(device.deviceKind.title), \(device.estimatedDistanceText), \(device.directionName)"
-        case .approaching:
-            return "\(device.name): сигнал усилился, \(device.estimatedDistanceText), \(device.directionName)"
-        }
     }
 }
 

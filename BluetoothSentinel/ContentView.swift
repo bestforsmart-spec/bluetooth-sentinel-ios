@@ -77,8 +77,8 @@ struct ContentView: View {
             }
 
             HStack(spacing: 10) {
-                StatPill(title: "Новые", value: "\(monitor.unknownDeviceCount)", color: .red)
-                StatPill(title: "Доверенные", value: "\(monitor.trustedDeviceCount)", color: .blue)
+                StatPill(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red)
+                StatPill(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue)
                 StatPill(title: "В эфире", value: "\(monitor.devices.count)", color: .green)
             }
         }
@@ -212,6 +212,8 @@ struct DeviceRow: View {
         switch device.trustState {
         case .unknown:
             return "NEW"
+        case .known:
+            return "KNOWN"
         case .quiet:
             return "QUIET"
         case .trusted:
@@ -223,6 +225,8 @@ struct DeviceRow: View {
         switch device.trustState {
         case .unknown:
             return "exclamationmark.triangle.fill"
+        case .known:
+            return "checkmark.circle.fill"
         case .quiet:
             return "speaker.slash.fill"
         case .trusted:
@@ -234,6 +238,8 @@ struct DeviceRow: View {
         switch device.trustState {
         case .unknown:
             return .red
+        case .known:
+            return .blue
         case .quiet:
             return .orange
         case .trusted:
