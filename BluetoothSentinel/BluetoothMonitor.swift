@@ -53,7 +53,7 @@ struct DetectedDevice: Identifiable, Equatable {
 }
 
 final class BluetoothMonitor: NSObject, ObservableObject {
-    private static let autoRememberInterval: TimeInterval = 30
+    private static let autoRememberInterval: TimeInterval = 10
 
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
     @Published private(set) var bluetoothState: CBManagerState = .unknown
