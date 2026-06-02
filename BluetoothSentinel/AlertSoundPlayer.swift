@@ -1,3 +1,4 @@
+import AudioToolbox
 import AVFoundation
 import Foundation
 
@@ -17,6 +18,14 @@ final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
             playTone(frequency: 1320, duration: 0.16)
             try? await Task.sleep(nanoseconds: 210_000_000)
             playTone(frequency: 1760, duration: 0.18)
+        }
+    }
+
+    func playVibration() {
+        Task { @MainActor in
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+            try? await Task.sleep(nanoseconds: 520_000_000)
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
         }
     }
 

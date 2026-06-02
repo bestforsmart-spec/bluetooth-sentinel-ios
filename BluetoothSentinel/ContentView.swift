@@ -97,6 +97,11 @@ struct ContentView: View {
                 Label("Звуковой сигнал", systemImage: "bell.and.waves.left.and.right.fill")
             }
 
+            Toggle(isOn: $monitor.vibrationOnlyEnabled) {
+                Label("Беззвучно: вибро", systemImage: "iphone.radiowaves.left.and.right")
+            }
+            .disabled(!monitor.alertsEnabled)
+
             HStack {
                 Button {
                     monitor.trustAllVisibleDevices()
