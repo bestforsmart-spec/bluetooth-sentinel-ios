@@ -157,6 +157,9 @@ struct DeviceRow: View {
                     Text(device.estimatedDistanceText)
                         .font(.caption.bold().monospacedDigit())
                         .foregroundStyle(distanceColor)
+                    if device.approachState == .approaching {
+                        ApproachBadge(state: device.approachState)
+                    }
                     DetectionZoneBadge(zone: device.detectionZone, isUnknown: device.trustState == .unknown, fieldModeEnabled: fieldModeEnabled)
                     DirectionBadge(device: device)
                     Label(trustStatusText, systemImage: trustStatusImage)
@@ -273,6 +276,17 @@ struct DeviceKindBadge: View {
         case .unknown:
             return .secondary
         }
+    }
+}
+
+struct ApproachBadge: View {
+    let state: ApproachState
+
+    var body: some View {
+        Label(state.title, systemImage: state.symbolName)
+            .font(.caption2.bold())
+            .foregroundStyle(.red)
+            .accessibilityLabel(state.title)
     }
 }
 
