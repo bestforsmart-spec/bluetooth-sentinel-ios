@@ -137,6 +137,7 @@ struct DeviceRow: View {
                         .font(.caption2.monospaced())
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
+                    DeviceKindBadge(kind: device.deviceKind)
                 }
 
                 Spacer()
@@ -225,6 +226,43 @@ struct DeviceRow: View {
             return .orange
         case .trusted:
             return .green
+        }
+    }
+}
+
+struct DeviceKindBadge: View {
+    let kind: DeviceKind
+
+    var body: some View {
+        Label {
+            Text("\(kind.confidenceText): \(kind.title)")
+        } icon: {
+            Image(systemName: kind.symbolName)
+        }
+        .font(.caption2.bold())
+        .foregroundStyle(color)
+        .padding(.top, 2)
+        .accessibilityLabel("Тип устройства: \(kind.confidenceText) \(kind.title)")
+    }
+
+    private var color: Color {
+        switch kind {
+        case .phone, .computer:
+            return .blue
+        case .drone:
+            return .red
+        case .audio, .watch:
+            return .purple
+        case .tracker:
+            return .orange
+        case .vehicle:
+            return .teal
+        case .keyboardMouse, .smartHome:
+            return .green
+        case .appleDevice:
+            return .secondary
+        case .unknown:
+            return .secondary
         }
     }
 }

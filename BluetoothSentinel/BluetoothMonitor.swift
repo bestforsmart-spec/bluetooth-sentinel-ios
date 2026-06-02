@@ -13,6 +13,7 @@ enum DeviceTrustState: Equatable {
 struct DetectedDevice: Identifiable, Equatable {
     let id: String
     var name: String
+    var deviceKind: DeviceKind
     var rssi: Int
     var smoothedRSSI: Double
     var strongestHeadingDegrees: Double?
@@ -65,6 +66,78 @@ struct DetectedDevice: Identifiable, Equatable {
 
     var directionArrowDegrees: Double? {
         strongestHeadingDegrees
+    }
+}
+
+enum DeviceKind: Equatable {
+    case phone
+    case computer
+    case drone
+    case audio
+    case watch
+    case tracker
+    case vehicle
+    case keyboardMouse
+    case smartHome
+    case appleDevice
+    case unknown
+
+    var title: String {
+        switch self {
+        case .phone:
+            return "Телефон"
+        case .computer:
+            return "Компьютер"
+        case .drone:
+            return "Дрон"
+        case .audio:
+            return "Аудио"
+        case .watch:
+            return "Часы/браслет"
+        case .tracker:
+            return "Трекер/метка"
+        case .vehicle:
+            return "Авто"
+        case .keyboardMouse:
+            return "Клавиатура/мышь"
+        case .smartHome:
+            return "IoT/датчик"
+        case .appleDevice:
+            return "Apple устройство"
+        case .unknown:
+            return "Неизвестно"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .phone:
+            return "iphone"
+        case .computer:
+            return "laptopcomputer"
+        case .drone:
+            return "airplane"
+        case .audio:
+            return "headphones"
+        case .watch:
+            return "applewatch"
+        case .tracker:
+            return "tag.fill"
+        case .vehicle:
+            return "car.fill"
+        case .keyboardMouse:
+            return "keyboard"
+        case .smartHome:
+            return "sensor.tag.radiowaves.forward.fill"
+        case .appleDevice:
+            return "apple.logo"
+        case .unknown:
+            return "questionmark.circle.fill"
+        }
+    }
+
+    var confidenceText: String {
+        self == .unknown ? "тип не определён" : "предположительно"
     }
 }
 
@@ -358,11 +431,13 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Без имени"
         let summary = AdvertisementFormatter.summary(from: advertisementData)
+        let deviceKind = DeviceKindClassifier.classify(name: name, advertisementData: advertisementData)
         let currentTrustState = trustState(for: id)
 
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
             existing.name = name
+            existing.deviceKind = deviceKind
             existing.rssi = latestRSSI
             existing.smoothedRSSI = (existing.smoothedRSSI * 0.72) + (Double(latestRSSI) * 0.28)
             updateDirectionEstimate(for: &existing)
@@ -380,6 +455,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             let newDevice = DetectedDevice(
                 id: id,
                 name: name,
+                deviceKind: deviceKind,
                 rssi: RSSI.intValue,
                 smoothedRSSI: Double(RSSI.intValue),
                 strongestHeadingDegrees: headingDegrees,
@@ -432,7 +508,7 @@ final class BluetoothAlertNotificationCenter {
     func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
         let content = UNMutableNotificationContent()
         content.title = "Новое Bluetooth-устройство"
-        content.body = "\(device.name) рядом: \(device.estimatedDistanceText), \(device.directionName)"
+        content.body = "\(device.name) рядом: \(device.deviceKind.title), \(device.estimatedDistanceText), \(device.directionName)"
         content.categoryIdentifier = "bluetooth-device-alert"
         if !vibrationOnly {
             content.sound = .default
@@ -525,6 +601,96 @@ enum AdvertisementFormatter {
         }
 
         return parts.isEmpty ? "Нет подробностей" : parts.joined(separator: " · ")
+    }
+}
+
+enum DeviceKindClassifier {
+    static func classify(name: String, advertisementData: [String: Any]) -> DeviceKind {
+        let normalizedName = name.lowercased()
+        let serviceUUIDs = (advertisementData[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] ?? [])
+            .map { $0.uuidString.uppercased() }
+        let manufacturerID = manufacturerCompanyID(from: advertisementData)
+
+        if matches(normalizedName, [
+            "dji", "mavic", "phantom", "inspire", "avata", "matrice", "spark",
+            "drone", "quad", "quadcopter", "fpv", "autel", "skydio", "parrot", "anafi"
+        ]) {
+            return .drone
+        }
+
+        if matches(normalizedName, [
+            "iphone", "android", "galaxy", "pixel", "phone", "redmi", "xiaomi",
+            "huawei", "honor", "oneplus", "oppo", "vivo", "realme", "moto"
+        ]) {
+            return .phone
+        }
+
+        if matches(normalizedName, [
+            "macbook", "imac", "mac mini", "mac studio", "windows", "laptop",
+            "desktop", "surface", "thinkpad", "lenovo", "dell", "hp-", "asus", "acer", "pc"
+        ]) {
+            return .computer
+        }
+
+        if matches(normalizedName, [
+            "airpods", "beats", "buds", "headphone", "headset", "earbuds",
+            "speaker", "sound", "jbl", "bose", "sony wh", "sony wf", "marshall", "anker"
+        ]) {
+            return .audio
+        }
+
+        if matches(normalizedName, [
+            "watch", "apple watch", "fitbit", "garmin", "mi band", "smart band",
+            "amazfit", "whoop", "polar", "coros"
+        ]) {
+            return .watch
+        }
+
+        if matches(normalizedName, [
+            "airtag", "tile", "smarttag", "tag", "tracker", "beacon", "ibeacon"
+        ]) || serviceUUIDs.contains("FEAA") {
+            return .tracker
+        }
+
+        if matches(normalizedName, [
+            "tesla", "bmw", "mercedes", "audi", "toyota", "honda", "ford",
+            "hyundai", "kia", "car", "vehicle", "obd"
+        ]) {
+            return .vehicle
+        }
+
+        if matches(normalizedName, ["keyboard", "mouse", "trackpad"]) || serviceUUIDs.contains("1812") {
+            return .keyboardMouse
+        }
+
+        if matches(normalizedName, [
+            "sensor", "thermo", "temperature", "humidity", "lock", "camera",
+            "door", "bulb", "lamp", "light", "plug", "switch", "printer", "router", "tv"
+        ]) || serviceUUIDs.contains("1809") {
+            return .smartHome
+        }
+
+        if manufacturerID == 0x004C {
+            if normalizedName.contains("ipad") {
+                return .phone
+            }
+            return .appleDevice
+        }
+
+        return .unknown
+    }
+
+    private static func matches(_ value: String, _ keywords: [String]) -> Bool {
+        keywords.contains { value.contains($0) }
+    }
+
+    private static func manufacturerCompanyID(from advertisementData: [String: Any]) -> UInt16? {
+        guard let data = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data,
+              data.count >= 2 else {
+            return nil
+        }
+
+        return UInt16(data[0]) | (UInt16(data[1]) << 8)
     }
 }
 
