@@ -24,6 +24,8 @@
 	<string>Приложение сканирует BLE-устройства рядом и подаёт сигнал при появлении нового устройства.</string>
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Приложение сканирует BLE-устройства рядом и подаёт сигнал при появлении нового устройства.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Приложение использует компас iPhone, чтобы примерно оценивать направление на Bluetooth-устройства по силе сигнала.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
 	<key>UIBackgroundModes</key>

@@ -143,6 +143,7 @@ struct DeviceRow: View {
                     Text(device.estimatedDistanceText)
                         .font(.caption.bold().monospacedDigit())
                         .foregroundStyle(distanceColor)
+                    DirectionBadge(device: device)
                     Label(device.isKnown ? "OK" : "NEW", systemImage: device.isKnown ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.caption2.bold())
                         .foregroundStyle(device.isKnown ? .green : .red)
@@ -187,6 +188,29 @@ struct DeviceRow: View {
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
         return .secondary
+    }
+}
+
+struct DirectionBadge: View {
+    let device: DetectedDevice
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: device.directionArrowDegrees == nil ? "location.north.line" : "location.north.fill")
+                .font(.caption2)
+                .rotationEffect(.degrees(device.directionArrowDegrees ?? 0))
+                .animation(.easeOut(duration: 0.18), value: device.directionArrowDegrees ?? 0)
+
+            Text(device.directionShortName)
+                .font(.caption2.bold())
+                .monospacedDigit()
+        }
+        .foregroundStyle(directionColor)
+        .accessibilityLabel("Направление \(device.directionName)")
+    }
+
+    private var directionColor: Color {
+        device.directionArrowDegrees == nil ? .secondary : .blue
     }
 }
 
