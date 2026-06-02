@@ -218,6 +218,8 @@ enum DeviceKind: Equatable {
 final class BluetoothMonitor: NSObject, ObservableObject {
     private static let autoRememberInterval: TimeInterval = 10
     private static let fieldScanRefreshInterval: TimeInterval = 25
+    private static let staleDeviceInterval: TimeInterval = 60
+    private static let staleCleanupInterval: TimeInterval = 5
     private static let approachMinimumObservationAge: TimeInterval = 5
     private static let approachRSSIGainThreshold = 7.0
     private static let approachDistanceDropRatio = 0.65
@@ -275,6 +277,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var approachReferenceRSSIByID: [String: Double] = [:]
     private var autoRememberTimer: Timer?
     private var scanRefreshTimer: Timer?
+    private var staleCleanupTimer: Timer?
     private var scanningRequested = true
 
     override init() {
@@ -301,11 +304,13 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         startHeadingUpdatesIfPossible()
         startAutoRememberTimer()
         startScanRefreshTimer()
+        startStaleCleanupTimer()
     }
 
     deinit {
         autoRememberTimer?.invalidate()
         scanRefreshTimer?.invalidate()
+        staleCleanupTimer?.invalidate()
     }
 
     var trustedDeviceCount: Int {
@@ -472,6 +477,13 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
     }
 
+    private func startStaleCleanupTimer() {
+        staleCleanupTimer?.invalidate()
+        staleCleanupTimer = Timer.scheduledTimer(withTimeInterval: Self.staleCleanupInterval, repeats: true) { [weak self] _ in
+            self?.removeStaleDevices()
+        }
+    }
+
     private func refreshFieldScanIfNeeded() {
         guard fieldModeEnabled, scanningRequested, bluetoothState == .poweredOn else { return }
         centralManager?.stopScan()
@@ -555,6 +567,25 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         guard changed else { return }
 
         persistDeviceLists()
+        publishDeviceList()
+    }
+
+    private func removeStaleDevices(now: Date = Date()) {
+        let staleIDs = devicesByID.compactMap { id, device in
+            now.timeIntervalSince(device.lastSeen) >= Self.staleDeviceInterval ? id : nil
+        }
+        guard !staleIDs.isEmpty else { return }
+
+        for id in staleIDs {
+            devicesByID.removeValue(forKey: id)
+            alertedDeviceIDs.remove(id)
+            approachAlertedDeviceIDs.remove(id)
+            approachReferenceDistanceByID.removeValue(forKey: id)
+            approachReferenceRSSIByID.removeValue(forKey: id)
+        }
+
+        let staleIDSet = Set(staleIDs)
+        deviceOrder.removeAll { staleIDSet.contains($0) }
         publishDeviceList()
     }
 
