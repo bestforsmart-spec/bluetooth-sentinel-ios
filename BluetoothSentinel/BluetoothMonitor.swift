@@ -5,11 +5,34 @@ struct DetectedDevice: Identifiable, Equatable {
     let id: String
     var name: String
     var rssi: Int
+    var smoothedRSSI: Double
     var firstSeen: Date
     var lastSeen: Date
     var advertisement: String
     var isKnown: Bool
     var alertCount: Int
+
+    var estimatedDistanceMeters: Double? {
+        BluetoothDistanceEstimator.estimateMeters(fromRSSI: smoothedRSSI)
+    }
+
+    var estimatedDistanceText: String {
+        guard let meters = estimatedDistanceMeters else { return "~-- м" }
+
+        if meters < 1 {
+            return "~<1 м"
+        }
+
+        if meters < 10 {
+            return String(format: "~%.1f м", meters)
+        }
+
+        if meters < 100 {
+            return String(format: "~%.0f м", meters)
+        }
+
+        return "~100+ м"
+    }
 }
 
 final class BluetoothMonitor: NSObject, ObservableObject {
@@ -149,8 +172,10 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         let isKnown = knownDeviceIDs.contains(id)
 
         if var existing = devicesByID[id] {
+            let latestRSSI = RSSI.intValue
             existing.name = name
-            existing.rssi = RSSI.intValue
+            existing.rssi = latestRSSI
+            existing.smoothedRSSI = (existing.smoothedRSSI * 0.72) + (Double(latestRSSI) * 0.28)
             existing.lastSeen = now
             existing.advertisement = summary
             existing.isKnown = isKnown
@@ -160,6 +185,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 id: id,
                 name: name,
                 rssi: RSSI.intValue,
+                smoothedRSSI: Double(RSSI.intValue),
                 firstSeen: now,
                 lastSeen: now,
                 advertisement: summary,
@@ -178,6 +204,18 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
         bluetoothState = central.state
+    }
+}
+
+enum BluetoothDistanceEstimator {
+    private static let referenceRSSIAtOneMeter = -59.0
+    private static let indoorPathLossExponent = 2.2
+
+    static func estimateMeters(fromRSSI rssi: Double) -> Double? {
+        guard rssi < 0, rssi > -120 else { return nil }
+
+        let exponent = (referenceRSSIAtOneMeter - rssi) / (10.0 * indoorPathLossExponent)
+        return min(max(pow(10.0, exponent), 0.2), 120.0)
     }
 }
 

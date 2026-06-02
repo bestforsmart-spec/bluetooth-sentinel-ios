@@ -140,6 +140,9 @@ struct DeviceRow: View {
                     Text("\(device.rssi) dBm")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(signalColor)
+                    Text(device.estimatedDistanceText)
+                        .font(.caption.bold().monospacedDigit())
+                        .foregroundStyle(distanceColor)
                     Label(device.isKnown ? "OK" : "NEW", systemImage: device.isKnown ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .font(.caption2.bold())
                         .foregroundStyle(device.isKnown ? .green : .red)
@@ -176,6 +179,13 @@ struct DeviceRow: View {
     private var signalColor: Color {
         if device.rssi > -55 { return .green }
         if device.rssi > -75 { return .orange }
+        return .secondary
+    }
+
+    private var distanceColor: Color {
+        guard let meters = device.estimatedDistanceMeters else { return .secondary }
+        if meters < 3 { return .green }
+        if meters < 10 { return .orange }
         return .secondary
     }
 }
