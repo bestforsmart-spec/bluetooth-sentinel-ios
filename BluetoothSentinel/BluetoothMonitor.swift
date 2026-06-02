@@ -225,10 +225,12 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let approachRSSIGainThreshold = 7.0
     private static let approachDistanceDropRatio = 0.65
     private static let approachMinimumDistanceDrop = 4.0
+    private static let initialBaselineDuration: TimeInterval = 60
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
     private static let vibrationOnlyEnabledKey = "vibrationOnlyEnabled"
     private static let knownDevicesKey = "knownObservedBluetoothDeviceIDs"
+    private static let initialBaselineCompletedKey = "initialBaselineCompleted"
 
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
     @Published private(set) var bluetoothState: CBManagerState = .unknown
@@ -279,6 +281,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var autoRememberTimer: Timer?
     private var scanRefreshTimer: Timer?
     private var staleCleanupTimer: Timer?
+    private var initialBaselineTimer: Timer?
+    private var initialBaselineStartedAt: Date?
+    private var initialBaselineCompleted: Bool
     private var scanningRequested = true
 
     override init() {
@@ -293,6 +298,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         self.alertsEnabled = UserDefaults.standard.object(forKey: Self.alertsEnabledKey) as? Bool ?? true
         self.fieldModeEnabled = UserDefaults.standard.object(forKey: Self.fieldModeEnabledKey) as? Bool ?? true
         self.vibrationOnlyEnabled = UserDefaults.standard.object(forKey: Self.vibrationOnlyEnabledKey) as? Bool ?? false
+        self.initialBaselineCompleted = UserDefaults.standard.object(forKey: Self.initialBaselineCompletedKey) as? Bool ?? false
         super.init()
         self.locationManager.delegate = self
         self.locationManager.headingFilter = 5
@@ -314,6 +320,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         autoRememberTimer?.invalidate()
         scanRefreshTimer?.invalidate()
         staleCleanupTimer?.invalidate()
+        initialBaselineTimer?.invalidate()
     }
 
     var trustedDeviceCount: Int {
@@ -336,9 +343,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devices.filter { $0.trustState == .quiet }.count
     }
 
+    var isInitialBaselineActive: Bool {
+        !initialBaselineCompleted
+    }
+
     func startScanning() {
         scanningRequested = true
         guard bluetoothState == .poweredOn else { return }
+        beginInitialBaselineIfNeeded()
         centralManager?.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
@@ -448,8 +460,46 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         persistDeviceLists()
     }
 
+    private func beginInitialBaselineIfNeeded(now: Date = Date()) {
+        guard !initialBaselineCompleted, initialBaselineStartedAt == nil else { return }
+
+        initialBaselineStartedAt = now
+        initialBaselineTimer?.invalidate()
+        initialBaselineTimer = Timer.scheduledTimer(withTimeInterval: Self.initialBaselineDuration, repeats: false) { [weak self] _ in
+            self?.completeInitialBaseline()
+        }
+    }
+
+    private func completeInitialBaseline() {
+        guard !initialBaselineCompleted else { return }
+
+        initialBaselineCompleted = true
+        UserDefaults.standard.set(true, forKey: Self.initialBaselineCompletedKey)
+        initialBaselineTimer?.invalidate()
+        initialBaselineTimer = nil
+    }
+
+    private func shouldAlertForFirstDiscovery() -> Bool {
+        alertsEnabled && initialBaselineCompleted
+    }
+
+    private func handleFirstDiscoveryAlert(_ device: DetectedDevice, now: Date = Date()) {
+        guard shouldAlertForFirstDiscovery() else { return }
+
+        lastAlertAt = now
+
+        if UIApplication.shared.applicationState == .active {
+            playConfiguredDiscoveryAlert()
+        } else {
+            notificationCenter.postDiscoveryAlert(device, vibrationOnly: vibrationOnlyEnabled)
+            if vibrationOnlyEnabled {
+                soundPlayer.playVibration()
+            }
+        }
+    }
+
     private func handleApproachAlert(_ device: DetectedDevice, now: Date = Date()) {
-        guard alertsEnabled, fieldModeEnabled, !approachAlertedDeviceIDs.contains(device.id) else {
+        guard alertsEnabled, fieldModeEnabled, initialBaselineCompleted, !approachAlertedDeviceIDs.contains(device.id) else {
             return
         }
 
@@ -471,6 +521,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             soundPlayer.playApproachVibration()
         } else {
             soundPlayer.playApproachAlert()
+        }
+    }
+
+    private func playConfiguredDiscoveryAlert() {
+        if vibrationOnlyEnabled {
+            soundPlayer.playVibration()
+        } else {
+            soundPlayer.playDiscoveryAlert()
         }
     }
 
@@ -664,8 +722,10 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             ?? "Без имени"
         let summary = AdvertisementFormatter.summary(from: advertisementData)
         let deviceKind = DeviceKindClassifier.classify(name: name, advertisementData: advertisementData)
+        beginInitialBaselineIfNeeded(now: now)
+        let wasUnknown = trustState(for: id) == .unknown
         var currentTrustState = trustState(for: id)
-        if currentTrustState == .unknown {
+        if wasUnknown {
             rememberKnownDevice(id)
             currentTrustState = .known
         }
@@ -711,6 +771,9 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             devicesByID[id] = newDevice
             deviceOrder.append(id)
             seedApproachReferenceIfNeeded(for: newDevice)
+            if wasUnknown {
+                handleFirstDiscoveryAlert(newDevice, now: now)
+            }
         }
 
         publishDeviceList()
@@ -743,6 +806,23 @@ final class BluetoothAlertNotificationCenter {
 
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func postDiscoveryAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
+        let content = UNMutableNotificationContent()
+        content.title = "Новое Bluetooth-устройство"
+        content.body = "\(device.name): \(device.deviceKind.title), \(device.estimatedDistanceText), \(device.directionName)"
+        content.categoryIdentifier = "bluetooth-device-alert"
+        if !vibrationOnly {
+            content.sound = .default
+        }
+
+        let request = UNNotificationRequest(
+            identifier: "bluetooth-discovery-\(device.id)-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
     }
 
     func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
