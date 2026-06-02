@@ -221,10 +221,13 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let fieldScanRefreshInterval: TimeInterval = 25
     private static let staleDeviceInterval: TimeInterval = 60
     private static let staleCleanupInterval: TimeInterval = 5
-    private static let approachMinimumObservationAge: TimeInterval = 5
-    private static let approachRSSIGainThreshold = 7.0
-    private static let approachDistanceDropRatio = 0.65
-    private static let approachMinimumDistanceDrop = 4.0
+    private static let approachMinimumObservationAge: TimeInterval = 12
+    private static let approachRSSIGainThreshold = 12.0
+    private static let approachDistanceDropRatio = 0.50
+    private static let approachMinimumDistanceDrop = 6.0
+    private static let approachRequiredEvidenceCount = 3
+    private static let approachEvidenceMinimumSpacing: TimeInterval = 1.5
+    private static let approachEvidenceResetInterval: TimeInterval = 10
     private static let initialBaselineDuration: TimeInterval = 60
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
@@ -251,6 +254,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 approachAlertedDeviceIDs.removeAll()
                 approachReferenceDistanceByID.removeAll()
                 approachReferenceRSSIByID.removeAll()
+                approachEvidenceCountByID.removeAll()
+                approachLastEvidenceAtByID.removeAll()
                 persistDeviceLists()
                 refreshTrustStates()
                 startScanning()
@@ -278,6 +283,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
     private var approachReferenceRSSIByID: [String: Double] = [:]
+    private var approachEvidenceCountByID: [String: Int] = [:]
+    private var approachLastEvidenceAtByID: [String: Date] = [:]
     private var autoRememberTimer: Timer?
     private var scanRefreshTimer: Timer?
     private var staleCleanupTimer: Timer?
@@ -392,6 +399,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
         approachReferenceRSSIByID.removeAll()
+        approachEvidenceCountByID.removeAll()
+        approachLastEvidenceAtByID.removeAll()
         persistDeviceLists()
         refreshTrustStates()
     }
@@ -403,6 +412,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
         approachReferenceRSSIByID.removeAll()
+        approachEvidenceCountByID.removeAll()
+        approachLastEvidenceAtByID.removeAll()
     }
 
     func testAlert() {
@@ -479,25 +490,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         initialBaselineTimer = nil
     }
 
-    private func shouldAlertForFirstDiscovery() -> Bool {
-        alertsEnabled && initialBaselineCompleted
-    }
-
-    private func handleFirstDiscoveryAlert(_ device: DetectedDevice, now: Date = Date()) {
-        guard shouldAlertForFirstDiscovery() else { return }
-
-        lastAlertAt = now
-
-        if UIApplication.shared.applicationState == .active {
-            playConfiguredDiscoveryAlert()
-        } else {
-            notificationCenter.postDiscoveryAlert(device, vibrationOnly: vibrationOnlyEnabled)
-            if vibrationOnlyEnabled {
-                soundPlayer.playVibration()
-            }
-        }
-    }
-
     private func handleApproachAlert(_ device: DetectedDevice, now: Date = Date()) {
         guard alertsEnabled, fieldModeEnabled, initialBaselineCompleted, !approachAlertedDeviceIDs.contains(device.id) else {
             return
@@ -521,14 +513,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             soundPlayer.playApproachVibration()
         } else {
             soundPlayer.playApproachAlert()
-        }
-    }
-
-    private func playConfiguredDiscoveryAlert() {
-        if vibrationOnlyEnabled {
-            soundPlayer.playVibration()
-        } else {
-            soundPlayer.playDiscoveryAlert()
         }
     }
 
@@ -574,8 +558,32 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
     }
 
+    private func recordApproachEvidence(for deviceID: String, now: Date) -> Bool {
+        if let lastEvidenceAt = approachLastEvidenceAtByID[deviceID],
+           now.timeIntervalSince(lastEvidenceAt) < Self.approachEvidenceMinimumSpacing {
+            return false
+        }
+
+        let evidenceCount = (approachEvidenceCountByID[deviceID] ?? 0) + 1
+        approachEvidenceCountByID[deviceID] = evidenceCount
+        approachLastEvidenceAtByID[deviceID] = now
+        return evidenceCount >= Self.approachRequiredEvidenceCount
+    }
+
+    private func decayApproachEvidence(for deviceID: String, now: Date) {
+        guard let lastEvidenceAt = approachLastEvidenceAtByID[deviceID],
+              now.timeIntervalSince(lastEvidenceAt) >= Self.approachEvidenceResetInterval else {
+            return
+        }
+
+        approachEvidenceCountByID[deviceID] = 0
+        approachLastEvidenceAtByID.removeValue(forKey: deviceID)
+    }
+
     private func updateApproachState(for device: inout DetectedDevice, now: Date) -> Bool {
-        guard fieldModeEnabled, device.trustState == .unknown || device.trustState == .known else {
+        guard fieldModeEnabled,
+              initialBaselineCompleted,
+              device.trustState == .unknown || device.trustState == .known else {
             return false
         }
 
@@ -596,13 +604,19 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 && referenceDistance - currentDistance >= Self.approachMinimumDistanceDrop
         }
 
-        if rssiGain >= Self.approachRSSIGainThreshold || distanceShowsApproach {
+        let signalShowsApproach = rssiGain >= Self.approachRSSIGainThreshold
+        if (signalShowsApproach || distanceShowsApproach),
+           recordApproachEvidence(for: device.id, now: now) {
             device.approachState = .approaching
             return true
         }
 
+        decayApproachEvidence(for: device.id, now: now)
+
         if device.smoothedRSSI < referenceRSSI - 3 {
             approachReferenceRSSIByID[device.id] = device.smoothedRSSI
+            approachEvidenceCountByID[device.id] = 0
+            approachLastEvidenceAtByID.removeValue(forKey: device.id)
         }
 
         if let currentDistance = device.estimatedDistanceMeters,
@@ -650,6 +664,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             approachAlertedDeviceIDs.remove(id)
             approachReferenceDistanceByID.removeValue(forKey: id)
             approachReferenceRSSIByID.removeValue(forKey: id)
+            approachEvidenceCountByID.removeValue(forKey: id)
+            approachLastEvidenceAtByID.removeValue(forKey: id)
         }
 
         let staleIDSet = Set(staleIDs)
@@ -771,9 +787,6 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             devicesByID[id] = newDevice
             deviceOrder.append(id)
             seedApproachReferenceIfNeeded(for: newDevice)
-            if wasUnknown {
-                handleFirstDiscoveryAlert(newDevice, now: now)
-            }
         }
 
         publishDeviceList()
@@ -806,23 +819,6 @@ final class BluetoothAlertNotificationCenter {
 
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
-    }
-
-    func postDiscoveryAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
-        let content = UNMutableNotificationContent()
-        content.title = "Новое Bluetooth-устройство"
-        content.body = "\(device.name): \(device.deviceKind.title), \(device.estimatedDistanceText), \(device.directionName)"
-        content.categoryIdentifier = "bluetooth-device-alert"
-        if !vibrationOnly {
-            content.sound = .default
-        }
-
-        let request = UNNotificationRequest(
-            identifier: "bluetooth-discovery-\(device.id)-\(Int(Date().timeIntervalSince1970))",
-            content: content,
-            trigger: nil
-        )
-        center.add(request)
     }
 
     func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {

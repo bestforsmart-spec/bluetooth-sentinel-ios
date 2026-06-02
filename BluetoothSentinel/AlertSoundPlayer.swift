@@ -5,16 +5,6 @@ import Foundation
 final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private var players: [AVAudioPlayer] = []
 
-    func playDiscoveryAlert() {
-        configureAudioSession()
-
-        Task { @MainActor in
-            playTone(frequency: 1320, duration: 0.16)
-            try? await Task.sleep(nanoseconds: 210_000_000)
-            playTone(frequency: 1760, duration: 0.18)
-        }
-    }
-
     func playApproachAlert() {
         configureAudioSession()
 
