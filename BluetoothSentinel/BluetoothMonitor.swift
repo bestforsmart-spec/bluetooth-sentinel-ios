@@ -2,6 +2,12 @@ import CoreBluetooth
 import CoreLocation
 import Foundation
 
+enum DeviceTrustState: Equatable {
+    case unknown
+    case quiet
+    case trusted
+}
+
 struct DetectedDevice: Identifiable, Equatable {
     let id: String
     var name: String
@@ -12,8 +18,16 @@ struct DetectedDevice: Identifiable, Equatable {
     var firstSeen: Date
     var lastSeen: Date
     var advertisement: String
-    var isKnown: Bool
+    var trustState: DeviceTrustState
     var alertCount: Int
+
+    var isTrusted: Bool {
+        trustState == .trusted
+    }
+
+    var shouldAlert: Bool {
+        trustState == .unknown
+    }
 
     var estimatedDistanceMeters: Double? {
         BluetoothDistanceEstimator.estimateMeters(fromRSSI: smoothedRSSI)
@@ -63,19 +77,26 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published private(set) var headingDegrees: Double?
     @Published var alertsEnabled = true
 
-    private let knownDevicesKey = "knownBluetoothDeviceIDs"
+    private let legacyKnownDevicesKey = "knownBluetoothDeviceIDs"
+    private let quietDevicesKey = "quietBluetoothDeviceIDs"
+    private let trustedDevicesKey = "trustedBluetoothDeviceIDs"
     private let soundPlayer = AlertSoundPlayer()
     private let locationManager = CLLocationManager()
     private var centralManager: CBCentralManager?
-    private var knownDeviceIDs: Set<String>
+    private var quietDeviceIDs: Set<String>
+    private var trustedDeviceIDs: Set<String>
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var alertedDeviceIDs: Set<String> = []
     private var autoRememberTimer: Timer?
 
     override init() {
-        let storedIDs = UserDefaults.standard.stringArray(forKey: knownDevicesKey) ?? []
-        self.knownDeviceIDs = Set(storedIDs)
+        let storedTrustedIDs = UserDefaults.standard.stringArray(forKey: trustedDevicesKey)
+            ?? UserDefaults.standard.stringArray(forKey: legacyKnownDevicesKey)
+            ?? []
+        let storedQuietIDs = UserDefaults.standard.stringArray(forKey: quietDevicesKey) ?? []
+        self.trustedDeviceIDs = Set(storedTrustedIDs)
+        self.quietDeviceIDs = Set(storedQuietIDs).subtracting(storedTrustedIDs)
         super.init()
         self.locationManager.delegate = self
         self.locationManager.headingFilter = 5
@@ -94,12 +115,16 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         autoRememberTimer?.invalidate()
     }
 
-    var knownDeviceCount: Int {
-        knownDeviceIDs.count
+    var trustedDeviceCount: Int {
+        trustedDeviceIDs.count
     }
 
     var unknownDeviceCount: Int {
-        devices.filter { !$0.isKnown }.count
+        devices.filter { $0.trustState == .unknown }.count
+    }
+
+    var quietDeviceCount: Int {
+        devices.filter { $0.trustState == .quiet }.count
     }
 
     func startScanning() {
@@ -120,25 +145,28 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         isScanning ? stopScanning() : startScanning()
     }
 
-    func markAllVisibleAsKnown() {
+    func trustAllVisibleDevices() {
         for id in devicesByID.keys {
-            knownDeviceIDs.insert(id)
+            trustedDeviceIDs.insert(id)
+            quietDeviceIDs.remove(id)
         }
-        persistKnownDevices()
-        refreshKnownFlags()
+        persistDeviceLists()
+        refreshTrustStates()
     }
 
-    func markAsKnown(_ device: DetectedDevice) {
-        knownDeviceIDs.insert(device.id)
-        persistKnownDevices()
-        refreshKnownFlags()
+    func trustDevice(_ device: DetectedDevice) {
+        trustedDeviceIDs.insert(device.id)
+        quietDeviceIDs.remove(device.id)
+        persistDeviceLists()
+        refreshTrustStates()
     }
 
-    func forgetKnownDevices() {
-        knownDeviceIDs.removeAll()
+    func resetTrustedDevices() {
+        trustedDeviceIDs.removeAll()
+        quietDeviceIDs.removeAll()
         alertedDeviceIDs.removeAll()
-        persistKnownDevices()
-        refreshKnownFlags()
+        persistDeviceLists()
+        refreshTrustStates()
     }
 
     func clearSession() {
@@ -152,15 +180,29 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         soundPlayer.playAlert()
     }
 
-    private func persistKnownDevices() {
-        UserDefaults.standard.set(Array(knownDeviceIDs).sorted(), forKey: knownDevicesKey)
+    private func persistDeviceLists() {
+        UserDefaults.standard.set(Array(trustedDeviceIDs).sorted(), forKey: trustedDevicesKey)
+        UserDefaults.standard.set(Array(trustedDeviceIDs).sorted(), forKey: legacyKnownDevicesKey)
+        UserDefaults.standard.set(Array(quietDeviceIDs).sorted(), forKey: quietDevicesKey)
     }
 
-    private func refreshKnownFlags() {
+    private func refreshTrustStates() {
         for id in devicesByID.keys {
-            devicesByID[id]?.isKnown = knownDeviceIDs.contains(id)
+            devicesByID[id]?.trustState = trustState(for: id)
         }
         publishDeviceList()
+    }
+
+    private func trustState(for id: String) -> DeviceTrustState {
+        if trustedDeviceIDs.contains(id) {
+            return .trusted
+        }
+
+        if quietDeviceIDs.contains(id) {
+            return .quiet
+        }
+
+        return .unknown
     }
 
     private func publishDeviceList() {
@@ -186,21 +228,21 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
         for id in deviceOrder {
             guard var device = devicesByID[id],
-                  !device.isKnown,
+                  device.trustState == .unknown,
                   now.timeIntervalSince(device.firstSeen) >= Self.autoRememberInterval
             else {
                 continue
             }
 
-            knownDeviceIDs.insert(id)
-            device.isKnown = true
+            quietDeviceIDs.insert(id)
+            device.trustState = .quiet
             devicesByID[id] = device
             changed = true
         }
 
         guard changed else { return }
 
-        persistKnownDevices()
+        persistDeviceLists()
         publishDeviceList()
     }
 
@@ -268,7 +310,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Без имени"
         let summary = AdvertisementFormatter.summary(from: advertisementData)
-        let isKnown = knownDeviceIDs.contains(id)
+        let currentTrustState = trustState(for: id)
 
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
@@ -278,10 +320,12 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             updateDirectionEstimate(for: &existing)
             existing.lastSeen = now
             existing.advertisement = summary
-            existing.isKnown = isKnown || now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval
-            if existing.isKnown {
-                knownDeviceIDs.insert(id)
-                persistKnownDevices()
+            existing.trustState = currentTrustState
+            if existing.trustState == .unknown,
+               now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval {
+                quietDeviceIDs.insert(id)
+                existing.trustState = .quiet
+                persistDeviceLists()
             }
             devicesByID[id] = existing
         } else {
@@ -295,12 +339,12 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 firstSeen: now,
                 lastSeen: now,
                 advertisement: summary,
-                isKnown: isKnown,
-                alertCount: isKnown ? 0 : 1
+                trustState: currentTrustState,
+                alertCount: currentTrustState == .unknown ? 1 : 0
             )
             devicesByID[id] = newDevice
             deviceOrder.append(id)
-            if !isKnown {
+            if currentTrustState == .unknown {
                 handleNewUnknownDevice(id)
             }
         }

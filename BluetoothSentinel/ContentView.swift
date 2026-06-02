@@ -25,7 +25,7 @@ struct ContentView: View {
                     } else {
                         ForEach(monitor.devices) { device in
                             DeviceRow(device: device) {
-                                monitor.markAsKnown(device)
+                                monitor.trustDevice(device)
                             }
                         }
                         .transaction { transaction in
@@ -75,7 +75,7 @@ struct ContentView: View {
 
             HStack(spacing: 10) {
                 StatPill(title: "Новые", value: "\(monitor.unknownDeviceCount)", color: .red)
-                StatPill(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue)
+                StatPill(title: "Доверенные", value: "\(monitor.trustedDeviceCount)", color: .blue)
                 StatPill(title: "В эфире", value: "\(monitor.devices.count)", color: .green)
             }
         }
@@ -99,18 +99,18 @@ struct ContentView: View {
 
             HStack {
                 Button {
-                    monitor.markAllVisibleAsKnown()
+                    monitor.trustAllVisibleDevices()
                 } label: {
-                    Label("Запомнить текущие", systemImage: "checkmark.shield.fill")
+                    Label("Доверять текущим", systemImage: "checkmark.shield.fill")
                 }
                 .disabled(monitor.devices.isEmpty)
 
                 Spacer()
 
                 Button(role: .destructive) {
-                    monitor.forgetKnownDevices()
+                    monitor.resetTrustedDevices()
                 } label: {
-                    Label("Сброс базы", systemImage: "xmark.shield.fill")
+                    Label("Сброс доверия", systemImage: "xmark.shield.fill")
                 }
             }
             .font(.subheadline)
@@ -120,7 +120,7 @@ struct ContentView: View {
 
 struct DeviceRow: View {
     let device: DetectedDevice
-    let markAsKnown: () -> Void
+    let trustDevice: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -144,9 +144,9 @@ struct DeviceRow: View {
                         .font(.caption.bold().monospacedDigit())
                         .foregroundStyle(distanceColor)
                     DirectionBadge(device: device)
-                    Label(device.isKnown ? "OK" : "NEW", systemImage: device.isKnown ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    Label(trustStatusText, systemImage: trustStatusImage)
                         .font(.caption2.bold())
-                        .foregroundStyle(device.isKnown ? .green : .red)
+                        .foregroundStyle(trustStatusColor)
                 }
             }
 
@@ -165,9 +165,9 @@ struct DeviceRow: View {
 
                 Spacer()
 
-                if !device.isKnown {
-                    Button("Запомнить") {
-                        markAsKnown()
+                if !device.isTrusted {
+                    Button("Доверять") {
+                        trustDevice()
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -188,6 +188,39 @@ struct DeviceRow: View {
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
         return .secondary
+    }
+
+    private var trustStatusText: String {
+        switch device.trustState {
+        case .unknown:
+            return "NEW"
+        case .quiet:
+            return "QUIET"
+        case .trusted:
+            return "TRUST"
+        }
+    }
+
+    private var trustStatusImage: String {
+        switch device.trustState {
+        case .unknown:
+            return "exclamationmark.triangle.fill"
+        case .quiet:
+            return "speaker.slash.fill"
+        case .trusted:
+            return "checkmark.shield.fill"
+        }
+    }
+
+    private var trustStatusColor: Color {
+        switch device.trustState {
+        case .unknown:
+            return .red
+        case .quiet:
+            return .orange
+        case .trusted:
+            return .green
+        }
     }
 }
 
