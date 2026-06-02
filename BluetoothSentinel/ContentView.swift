@@ -15,7 +15,7 @@ struct ContentView: View {
                     controlPanel
                 }
 
-                Section("Устройства") {
+                Section("Список устройств") {
                     if monitor.devices.isEmpty {
                         ContentUnavailableView(
                             "Пока пусто",
@@ -27,6 +27,9 @@ struct ContentView: View {
                             DeviceRow(device: device) {
                                 monitor.markAsKnown(device)
                             }
+                        }
+                        .transaction { transaction in
+                            transaction.animation = nil
                         }
                     }
                 }

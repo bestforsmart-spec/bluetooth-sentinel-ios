@@ -25,6 +25,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var centralManager: CBCentralManager?
     private var knownDeviceIDs: Set<String>
     private var devicesByID: [String: DetectedDevice] = [:]
+    private var deviceOrder: [String] = []
     private var alertedDeviceIDs: Set<String> = []
 
     override init() {
@@ -89,6 +90,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     func clearSession() {
         devicesByID.removeAll()
+        deviceOrder.removeAll()
         devices.removeAll()
         alertedDeviceIDs.removeAll()
     }
@@ -109,12 +111,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     private func publishDeviceList() {
-        devices = devicesByID.values.sorted { lhs, rhs in
-            if lhs.isKnown != rhs.isKnown {
-                return !lhs.isKnown && rhs.isKnown
-            }
-            return lhs.lastSeen > rhs.lastSeen
-        }
+        devices = deviceOrder.compactMap { devicesByID[$0] }
     }
 
     private func handleNewUnknownDevice(_ id: String) {
@@ -170,6 +167,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 alertCount: isKnown ? 0 : 1
             )
             devicesByID[id] = newDevice
+            deviceOrder.append(id)
             if !isKnown {
                 handleNewUnknownDevice(id)
             }
