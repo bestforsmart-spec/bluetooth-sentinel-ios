@@ -1,10 +1,12 @@
 import CoreBluetooth
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var monitor: BluetoothMonitor
-    @State private var isAnalysisVisible = false
+    @State private var isAnalysisSheetPresented = false
+    @State private var selectedDevice: DetectedDevice?
 
     private var theme: SentinelTheme {
         SentinelTheme(colorScheme: colorScheme)
@@ -16,9 +18,6 @@ struct ContentView: View {
                 VStack(spacing: 14) {
                     statusPanel
                     controlPanel
-                    if isAnalysisVisible {
-                        analysisPanel
-                    }
                     devicesPanel
                 }
                 .padding(16)
@@ -27,35 +26,50 @@ struct ContentView: View {
             .navigationTitle("BT Sentinel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(theme.background, for: .navigationBar)
+            .sheet(isPresented: $isAnalysisSheetPresented) {
+                AnalysisSheetView(events: monitor.signalEvents, theme: theme)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(item: $selectedDevice) { device in
+                DeviceDetailSheet(device: latestDevice(for: device), theme: theme, monitor: monitor)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
         }
     }
 
     private var statusPanel: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle()
-                        .fill(statusColor.opacity(0.16))
-                    Image(systemName: monitor.isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(statusColor)
-                }
-                .frame(width: 44, height: 44)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top, spacing: 14) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        ZStack {
+                            Circle()
+                                .fill(statusColor.opacity(0.16))
+                            Image(systemName: monitor.isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(statusColor)
+                        }
+                        .frame(width: 34, height: 34)
 
-                VStack(alignment: .leading, spacing: 3) {
+                        Text(operationStateText)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(theme.primaryText)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.82)
+                    }
+
                     Text(monitor.bluetoothState.title)
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(theme.primaryText)
-                    Text(monitor.isScanning ? "Сканирование активно" : "Сканирование остановлено")
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
                         .foregroundStyle(theme.secondaryText)
                 }
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 2) {
+                VStack(alignment: .trailing, spacing: 0) {
                     Text("\(monitor.devices.count)")
-                        .font(.title3.monospacedDigit().weight(.bold))
+                        .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
                         .foregroundStyle(theme.primaryText)
                     Text("в эфире")
                         .font(.caption2.weight(.medium))
@@ -63,17 +77,17 @@ struct ContentView: View {
                 }
             }
 
+            RadarActivityBar(level: airActivityLevel, accent: statusColor, theme: theme)
+
             HStack(spacing: 8) {
                 CompactMetric(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red, theme: theme)
                 Button {
-                    withAnimation(.snappy(duration: 0.22)) {
-                        isAnalysisVisible.toggle()
-                    }
+                    isAnalysisSheetPresented = true
                 } label: {
                     CompactMetric(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue, theme: theme)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(isAnalysisVisible ? "Скрыть анализ" : "Показать анализ")
+                .accessibilityLabel("Показать анализ")
                 CompactMetric(title: "Тихий старт", value: monitor.isInitialBaselineActive ? "ON" : "OK", color: .green, theme: theme)
             }
         }
@@ -86,7 +100,7 @@ struct ContentView: View {
     }
 
     private var controlPanel: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             Toggle(isOn: $monitor.vibrationOnlyEnabled) {
                 Label("Беззвучный режим", systemImage: monitor.vibrationOnlyEnabled ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     .font(.subheadline.weight(.semibold))
@@ -94,7 +108,7 @@ struct ContentView: View {
             }
             .tint(.orange)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Button {
                     monitor.trustAllVisibleDevices()
                 } label: {
@@ -127,7 +141,7 @@ struct ContentView: View {
     private var devicesPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Устройства")
+                Text("Сигнальная таблица")
                     .font(.headline.weight(.semibold))
                     .foregroundStyle(theme.primaryText)
                 Spacer()
@@ -144,7 +158,13 @@ struct ContentView: View {
             } else {
                 LazyVStack(spacing: 8) {
                     ForEach(monitor.devices) { device in
-                        CompactDeviceRow(device: device, theme: theme)
+                        Button {
+                            selectedDevice = device
+                        } label: {
+                            CompactDeviceRow(device: device, theme: theme)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Открыть устройство \(device.name)")
                             .transaction { transaction in
                                 transaction.animation = nil
                             }
@@ -154,45 +174,26 @@ struct ContentView: View {
         }
     }
 
-    @ViewBuilder
-    private var analysisPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("Анализ")
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(theme.primaryText)
-                Spacer()
-                Text("\(monitor.signalEvents.count)")
-                    .font(.caption.monospacedDigit().weight(.bold))
-                    .foregroundStyle(theme.secondaryText)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(theme.softFill, in: Capsule())
-            }
-
-            if monitor.signalEvents.isEmpty {
-                Text("История появится после новых устройств или заметного изменения сигнала.")
-                    .font(.caption)
-                    .foregroundStyle(theme.secondaryText)
-                    .lineLimit(2)
-            } else {
-                VStack(spacing: 7) {
-                    ForEach(monitor.signalEvents.prefix(5)) { event in
-                        SignalEventRow(event: event, theme: theme)
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(theme.cardStroke)
-        }
+    private var statusColor: Color {
+        if monitor.approachingDeviceCount > 0 { return .red }
+        return monitor.isScanning ? .green : .secondary
     }
 
-    private var statusColor: Color {
-        monitor.isScanning ? .green : .secondary
+    private var operationStateText: String {
+        if monitor.approachingDeviceCount > 0 { return "Сближение" }
+        if monitor.isInitialBaselineActive { return "Тихий старт" }
+        if monitor.isScanning { return "Эфир стабилен" }
+        return "Скан остановлен"
+    }
+
+    private var airActivityLevel: CGFloat {
+        guard let strongestRSSI = monitor.devices.map(\.rssi).max() else { return 0 }
+        let clamped = min(max(Double(strongestRSSI), -100), -35)
+        return CGFloat((clamped + 100) / 65)
+    }
+
+    private func latestDevice(for device: DetectedDevice) -> DetectedDevice {
+        monitor.devices.first { $0.id == device.id } ?? device
     }
 }
 
@@ -227,6 +228,7 @@ struct CompactDeviceRow: View {
                     Text(shortIdentifier)
                         .font(.caption2.monospaced())
                         .lineLimit(1)
+                    TrustBadge(state: device.trustState, theme: theme)
                 }
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(theme.secondaryText)
@@ -260,6 +262,15 @@ struct CompactDeviceRow: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
         .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .top) {
+            if isFresh || device.approachState == .approaching {
+                Rectangle()
+                    .fill(rowAccent.opacity(device.approachState == .approaching ? 0.85 : 0.55))
+                    .frame(height: 2)
+                    .clipShape(Capsule())
+                    .padding(.horizontal, 12)
+            }
+        }
         .overlay(alignment: .leading) {
             if device.trustState == .trusted {
                 Rectangle()
@@ -271,7 +282,7 @@ struct CompactDeviceRow: View {
         }
         .overlay {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(device.approachState == .approaching ? Color.red.opacity(0.45) : theme.cardStroke)
+                .stroke(device.approachState == .approaching ? Color.red.opacity(0.55) : theme.cardStroke)
         }
     }
 
@@ -304,6 +315,74 @@ struct CompactDeviceRow: View {
             return .yellow
         default:
             return theme.secondaryText
+        }
+    }
+
+    private var isFresh: Bool {
+        Date().timeIntervalSince(device.firstSeen) < 8
+    }
+
+    private var rowAccent: Color {
+        if device.approachState == .approaching { return .red }
+        if isFresh { return .blue }
+        return theme.secondaryText
+    }
+}
+
+struct RadarActivityBar: View {
+    let level: CGFloat
+    let accent: Color
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text("Активность")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.secondaryText)
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(theme.softFill)
+                    Capsule()
+                        .fill(accent.opacity(0.82))
+                        .frame(width: proxy.size.width * min(max(level, 0), 1))
+                }
+            }
+            .frame(height: 8)
+
+            Text(activityText)
+                .font(.caption2.monospacedDigit().weight(.bold))
+                .foregroundStyle(theme.secondaryText)
+        }
+    }
+
+    private var activityText: String {
+        if level > 0.72 { return "HI" }
+        if level > 0.42 { return "MID" }
+        if level > 0 { return "LOW" }
+        return "--"
+    }
+}
+
+struct TrustBadge: View {
+    let state: DeviceTrustState
+    let theme: SentinelTheme
+
+    var body: some View {
+        switch state {
+        case .trusted:
+            Image(systemName: "checkmark.shield.fill")
+                .foregroundStyle(.green)
+        case .known:
+            Image(systemName: "shield.fill")
+                .foregroundStyle(.blue.opacity(0.8))
+        case .quiet:
+            Image(systemName: "speaker.slash.fill")
+                .foregroundStyle(theme.secondaryText)
+        case .unknown:
+            Image(systemName: "questionmark.circle.fill")
+                .foregroundStyle(theme.secondaryText)
         }
     }
 }
@@ -349,6 +428,249 @@ struct SignalEventRow: View {
         case .approaching:
             return .red
         }
+    }
+}
+
+struct AnalysisSheetView: View {
+    let events: [SignalEvent]
+    let theme: SentinelTheme
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                SheetHeader(title: "Анализ сигнала", count: events.count, theme: theme)
+
+                if events.isEmpty {
+                    Text("Событий пока нет")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.secondaryText)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 28)
+                        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(theme.cardStroke)
+                        }
+                } else {
+                    LazyVStack(spacing: 9) {
+                        ForEach(events) { event in
+                            SignalEventRow(event: event, theme: theme)
+                                .padding(12)
+                                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .stroke(theme.cardStroke)
+                                }
+                        }
+                    }
+                }
+            }
+            .padding(16)
+        }
+        .background(theme.background.ignoresSafeArea())
+    }
+}
+
+struct DeviceDetailSheet: View {
+    let device: DetectedDevice
+    let theme: SentinelTheme
+    let monitor: BluetoothMonitor
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    SignalDot(color: signalColor)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(device.name)
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(theme.primaryText)
+                            .lineLimit(2)
+                        Text(device.id)
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(theme.secondaryText)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title3)
+                            .foregroundStyle(theme.secondaryText)
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                HStack(spacing: 8) {
+                    DetailMetric(title: "RSSI", value: "\(device.rssi)", unit: "dBm", color: signalColor, theme: theme)
+                    DetailMetric(title: "Дистанция", value: device.estimatedDistanceText, unit: "", color: distanceColor, theme: theme)
+                    DetailMetric(title: "Курс", value: device.directionShortName, unit: device.directionConfidenceText, color: directionColor, theme: theme)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        Text("Мощность")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.primaryText)
+                        Spacer()
+                        Text(device.signalTrendText)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(trendColor)
+                    }
+                    SignalHistoryStrip(samples: Array(device.signalSamples.suffix(24)), color: signalColor, theme: theme)
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+
+                HStack(spacing: 10) {
+                    Button {
+                        monitor.trustDevice(device)
+                        dismiss()
+                    } label: {
+                        Label("Доверять", systemImage: "checkmark.shield.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+
+                    Button {
+                        UIPasteboard.general.string = device.id
+                    } label: {
+                        Label("ID", systemImage: "doc.on.doc.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+            .padding(16)
+        }
+        .background(theme.background.ignoresSafeArea())
+    }
+
+    private var signalColor: Color {
+        if device.rssi > -55 { return .green }
+        if device.rssi > -75 { return .orange }
+        return theme.secondaryText
+    }
+
+    private var distanceColor: Color {
+        guard let meters = device.estimatedDistanceMeters else { return theme.secondaryText }
+        if meters < 3 { return .green }
+        if meters < 10 { return .orange }
+        return theme.secondaryText
+    }
+
+    private var trendColor: Color {
+        switch device.signalTrendText {
+        case "сближение":
+            return .red
+        case "усиливается":
+            return .orange
+        case "слабеет":
+            return .blue
+        case "дрожит":
+            return .yellow
+        default:
+            return theme.secondaryText
+        }
+    }
+
+    private var directionColor: Color {
+        switch device.directionConfidence {
+        case .scanning:
+            return theme.secondaryText
+        case .low, .medium:
+            return .blue
+        case .high:
+            return .green
+        }
+    }
+}
+
+struct SheetHeader: View {
+    let title: String
+    let count: Int
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack {
+            Text(title)
+                .font(.title3.weight(.bold))
+                .foregroundStyle(theme.primaryText)
+            Spacer()
+            Text("\(count)")
+                .font(.caption.monospacedDigit().weight(.bold))
+                .foregroundStyle(theme.secondaryText)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(theme.softFill, in: Capsule())
+        }
+    }
+}
+
+struct DetailMetric: View {
+    let title: String
+    let value: String
+    let unit: String
+    let color: Color
+    let theme: SentinelTheme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(theme.secondaryText)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.subheadline.monospacedDigit().weight(.bold))
+                    .foregroundStyle(color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(theme.secondaryText)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(theme.softFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+}
+
+struct SignalHistoryStrip: View {
+    let samples: [SignalSample]
+    let color: Color
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 3) {
+            ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                Capsule()
+                    .fill(color.opacity(0.80))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: barHeight(for: sample.rssi))
+            }
+        }
+        .frame(height: 54)
+        .padding(10)
+        .background(theme.softFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+
+    private func barHeight(for rssi: Int) -> CGFloat {
+        let clamped = min(max(Double(rssi), -100), -35)
+        let normalized = (clamped + 100) / 65
+        return CGFloat(8 + (normalized * 42))
     }
 }
 
