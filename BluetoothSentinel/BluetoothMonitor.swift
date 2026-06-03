@@ -39,6 +39,74 @@ struct SignalEvent: Identifiable, Equatable {
     let kind: SignalEventKind
 }
 
+enum InstrumentHealthLevel: Equatable {
+    case nominal
+    case warning
+    case critical
+}
+
+struct InstrumentCheck: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let detail: String
+    let level: InstrumentHealthLevel
+}
+
+struct InstrumentStatus: Equatable {
+    let title: String
+    let detail: String
+    let level: InstrumentHealthLevel
+    let checks: [InstrumentCheck]
+}
+
+enum ThreatLevel: Int, Equatable {
+    case normal
+    case watch
+    case strengthening
+    case confirmedApproach
+    case criticalApproach
+
+    var title: String {
+        switch self {
+        case .normal:
+            return "Норма"
+        case .watch:
+            return "Наблюдение"
+        case .strengthening:
+            return "Сигнал усиливается"
+        case .confirmedApproach:
+            return "Подтверждено"
+        case .criticalApproach:
+            return "Критично"
+        }
+    }
+}
+
+enum AlertConfidence: Equatable {
+    case low
+    case medium
+    case high
+
+    var title: String {
+        switch self {
+        case .low:
+            return "низкая"
+        case .medium:
+            return "средняя"
+        case .high:
+            return "высокая"
+        }
+    }
+}
+
+struct InstrumentLogEntry: Identifiable, Equatable {
+    let id = UUID()
+    let timestamp: Date
+    let title: String
+    let detail: String
+    let level: InstrumentHealthLevel
+}
+
 private struct ApproachSignalAnalysis {
     let hasEnoughHistory: Bool
     let rssiGain: Double
@@ -376,14 +444,17 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let signalSampleLimit = 30
     private static let signalSampleMinimumSpacing: TimeInterval = 1
     private static let signalEventLimit = 50
+    private static let blackBoxEventLimit = 200
     private static let signalEventRSSIThreshold = 8
     private static let signalEventMinimumSpacing: TimeInterval = 8
     private static let directionSectorCount = 8
     private static let initialBaselineDuration: TimeInterval = 60
+    private static let packetFreshInterval: TimeInterval = 8
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
     private static let maximumSensitivityEnabledKey = "maximumSensitivityEnabled"
     private static let vibrationOnlyEnabledKey = "vibrationOnlyEnabled"
+    private static let externalSensorEnabledKey = "externalSensorEnabled"
     private static let knownDevicesKey = "knownObservedBluetoothDeviceIDs"
     private static let initialBaselineCompletedKey = "initialBaselineCompleted"
 
@@ -391,8 +462,11 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published private(set) var bluetoothState: CBManagerState = .unknown
     @Published private(set) var devices: [DetectedDevice] = []
     @Published private(set) var signalEvents: [SignalEvent] = []
+    @Published private(set) var blackBoxEvents: [InstrumentLogEntry] = []
     @Published private(set) var isScanning = false
     @Published private(set) var lastAlertAt: Date?
+    @Published private(set) var lastPacketAt: Date?
+    @Published private(set) var packetCount = 0
     @Published private(set) var headingDegrees: Double?
     @Published var alertsEnabled: Bool {
         didSet {
@@ -430,6 +504,11 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published var vibrationOnlyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(vibrationOnlyEnabled, forKey: Self.vibrationOnlyEnabledKey)
+        }
+    }
+    @Published var externalSensorEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(externalSensorEnabled, forKey: Self.externalSensorEnabledKey)
         }
     }
 
@@ -473,6 +552,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         self.fieldModeEnabled = true
         self.maximumSensitivityEnabled = true
         self.vibrationOnlyEnabled = UserDefaults.standard.object(forKey: Self.vibrationOnlyEnabledKey) as? Bool ?? false
+        self.externalSensorEnabled = UserDefaults.standard.object(forKey: Self.externalSensorEnabledKey) as? Bool ?? false
         self.initialBaselineCompleted = UserDefaults.standard.object(forKey: Self.initialBaselineCompletedKey) as? Bool ?? false
         super.init()
         UserDefaults.standard.set(true, forKey: Self.alertsEnabledKey)
@@ -527,6 +607,141 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         !initialBaselineCompleted
     }
 
+    var strongestDevice: DetectedDevice? {
+        devices.max { $0.rssi < $1.rssi }
+    }
+
+    var threatLevel: ThreatLevel {
+        if devices.contains(where: { device in
+            device.approachState == .approaching
+                && (device.rssi >= -55 || (device.estimatedDistanceMeters ?? 120) <= 3)
+        }) {
+            return .criticalApproach
+        }
+
+        if approachingDeviceCount > 0 {
+            return .confirmedApproach
+        }
+
+        if devices.contains(where: { $0.signalTrendText == "усиливается" }) {
+            return .strengthening
+        }
+
+        return devices.isEmpty ? .normal : .watch
+    }
+
+    var alertConfidence: AlertConfidence {
+        guard let device = devices.first(where: { $0.approachState == .approaching })
+            ?? devices.first(where: { $0.signalTrendText == "усиливается" })
+            ?? strongestDevice
+        else {
+            return .low
+        }
+
+        return confidence(for: device)
+    }
+
+    var instrumentStatus: InstrumentStatus {
+        let checks = selfTestChecks
+        let level: InstrumentHealthLevel
+        let title: String
+        let detail: String
+
+        if checks.contains(where: { $0.level == .critical }) {
+            level = .critical
+            title = "Требует внимания"
+            detail = "Один из базовых каналов не готов"
+        } else if checks.contains(where: { $0.level == .warning }) {
+            level = .warning
+            title = "Ограниченная уверенность"
+            detail = "Данные есть, но условия сканирования не идеальны"
+        } else {
+            level = .nominal
+            title = "Готов"
+            detail = "Скан активен, данные свежие"
+        }
+
+        return InstrumentStatus(title: title, detail: detail, level: level, checks: checks)
+    }
+
+    var selfTestChecks: [InstrumentCheck] {
+        let now = Date()
+        let packetAge = lastPacketAt.map { now.timeIntervalSince($0) }
+        let dataIsFresh = packetAge.map { $0 <= Self.packetFreshInterval } ?? false
+        let appIsActive = UIApplication.shared.applicationState == .active
+        let isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+
+        return [
+            InstrumentCheck(
+                id: "bluetooth",
+                title: "Bluetooth",
+                detail: bluetoothState == .poweredOn ? "включен" : bluetoothState.title,
+                level: bluetoothState == .poweredOn ? .nominal : .critical
+            ),
+            InstrumentCheck(
+                id: "scan",
+                title: "Скан",
+                detail: isScanning ? "активен" : "остановлен",
+                level: isScanning ? .nominal : .critical
+            ),
+            InstrumentCheck(
+                id: "packets",
+                title: "Данные",
+                detail: dataIsFresh ? "свежие · \(packetCount)" : "мало свежих пакетов",
+                level: dataIsFresh ? .nominal : (devices.isEmpty ? .warning : .critical)
+            ),
+            InstrumentCheck(
+                id: "baseline",
+                title: "Тихий старт",
+                detail: initialBaselineCompleted ? "завершен" : "калибровка",
+                level: initialBaselineCompleted ? .nominal : .warning
+            ),
+            InstrumentCheck(
+                id: "compass",
+                title: "Компас",
+                detail: headingDegrees == nil ? "направление не готово" : "курс доступен",
+                level: headingDegrees == nil ? .warning : .nominal
+            ),
+            InstrumentCheck(
+                id: "background",
+                title: "Фон",
+                detail: appIsActive ? "экран активен" : "iOS ограничивает фон",
+                level: appIsActive ? .nominal : .warning
+            ),
+            InstrumentCheck(
+                id: "power",
+                title: "Питание",
+                detail: isLowPowerMode ? "энергосбережение включено" : "обычный режим",
+                level: isLowPowerMode ? .warning : .nominal
+            ),
+            InstrumentCheck(
+                id: "external",
+                title: "Внешний сенсор",
+                detail: externalSensorEnabled ? "ожидание источника" : "не подключен",
+                level: externalSensorEnabled ? .warning : .nominal
+            )
+        ]
+    }
+
+    func confidence(for device: DetectedDevice) -> AlertConfidence {
+        let sampleCount = device.signalSamples.count
+        let jitter = device.recentRSSIJitter
+        let directionConfidence = device.directionConfidence
+
+        if device.approachState == .approaching,
+           sampleCount >= 12,
+           jitter <= 9,
+           (directionConfidence == .medium || directionConfidence == .high) {
+            return .high
+        }
+
+        if sampleCount >= 8, jitter <= 13 {
+            return .medium
+        }
+
+        return .low
+    }
+
     func startScanning() {
         scanningRequested = true
         guard bluetoothState == .poweredOn else { return }
@@ -537,6 +752,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         )
         isScanning = true
         applyMaximumSensitivityPowerMode()
+        appendBlackBoxEvent(title: "Скан запущен", detail: "дубликаты BLE включены", level: .nominal)
     }
 
     func stopScanning() {
@@ -544,6 +760,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         centralManager?.stopScan()
         isScanning = false
         applyMaximumSensitivityPowerMode()
+        appendBlackBoxEvent(title: "Скан остановлен", detail: "ручная остановка", level: .warning)
     }
 
     func toggleScanning() {
@@ -558,6 +775,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
         persistDeviceLists()
         refreshTrustStates()
+        appendBlackBoxEvent(title: "Доверие обновлено", detail: "текущие устройства добавлены в доверенные", level: .nominal)
     }
 
     func trustDevice(_ device: DetectedDevice) {
@@ -566,6 +784,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         quietDeviceIDs.remove(device.id)
         persistDeviceLists()
         refreshTrustStates()
+        appendBlackBoxEvent(title: "Устройство доверено", detail: "\(device.name) · \(String(device.id.prefix(8)))", level: .nominal)
     }
 
     func resetTrustedDevices() {
@@ -580,6 +799,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         signalEventLastAtByID.removeAll()
         persistDeviceLists()
         refreshTrustStates()
+        appendBlackBoxEvent(title: "Доверие сброшено", detail: "текущие базовые точки очищены", level: .warning)
     }
 
     func clearSession() {
@@ -594,10 +814,42 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         signalEventReferenceRSSIByID.removeAll()
         signalEventLastAtByID.removeAll()
         signalEvents.removeAll()
+        blackBoxEvents.removeAll()
+        lastPacketAt = nil
+        packetCount = 0
     }
 
     func testAlert() {
         playConfiguredForegroundAlert()
+        appendBlackBoxEvent(title: "Тест сигнала", detail: vibrationOnlyEnabled ? "вибрация" : "звуковой сигнал", level: .nominal)
+    }
+
+    func restartFieldBaseline() {
+        initialBaselineCompleted = false
+        initialBaselineStartedAt = nil
+        UserDefaults.standard.set(false, forKey: Self.initialBaselineCompletedKey)
+        initialBaselineTimer?.invalidate()
+        approachAlertedDeviceIDs.removeAll()
+        approachReferenceDistanceByID.removeAll()
+        approachReferenceRSSIByID.removeAll()
+        approachEvidenceCountByID.removeAll()
+        approachLastEvidenceAtByID.removeAll()
+        signalEventReferenceRSSIByID.removeAll()
+        signalEventLastAtByID.removeAll()
+        for device in devicesByID.values {
+            seedApproachReferenceIfNeeded(for: device)
+        }
+        appendBlackBoxEvent(title: "Пост развернут", detail: "тихий старт перезапущен на 60 секунд", level: .warning)
+        startScanning()
+    }
+
+    func exportBlackBoxText() -> String {
+        blackBoxEvents
+            .map { entry in
+                let timestamp = entry.timestamp.formatted(date: .numeric, time: .standard)
+                return "[\(timestamp)] \(entry.title): \(entry.detail)"
+            }
+            .joined(separator: "\n")
     }
 
     func handleAppDidBecomeActive() {
@@ -670,6 +922,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.initialBaselineCompletedKey)
         initialBaselineTimer?.invalidate()
         initialBaselineTimer = nil
+        appendBlackBoxEvent(title: "Тихий старт завершен", detail: "тревоги по сближению активны", level: .nominal)
     }
 
     private func handleApproachAlert(_ device: DetectedDevice, now: Date = Date()) {
@@ -782,6 +1035,24 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
     }
 
+    private func appendBlackBoxEvent(title: String, detail: String, level: InstrumentHealthLevel, now: Date = Date()) {
+        if let latest = blackBoxEvents.first,
+           latest.title == title,
+           latest.detail == detail,
+           now.timeIntervalSince(latest.timestamp) < 10 {
+            return
+        }
+
+        blackBoxEvents.insert(
+            InstrumentLogEntry(timestamp: now, title: title, detail: detail, level: level),
+            at: 0
+        )
+
+        if blackBoxEvents.count > Self.blackBoxEventLimit {
+            blackBoxEvents.removeLast(blackBoxEvents.count - Self.blackBoxEventLimit)
+        }
+    }
+
     private func recordSignalEventIfNeeded(for device: DetectedDevice, previousRSSI: Int, now: Date) {
         let referenceRSSI = signalEventReferenceRSSIByID[device.id] ?? previousRSSI
         let delta = device.rssi - referenceRSSI
@@ -799,6 +1070,12 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             deviceName: device.name,
             detail: "\(sign)\(delta) dB · \(device.signalTrendText)",
             kind: kind,
+            now: now
+        )
+        appendBlackBoxEvent(
+            title: delta > 0 ? "Сигнал усилился" : "Сигнал ослаб",
+            detail: "\(device.name) · \(sign)\(delta) dB · \(device.rssi) dBm",
+            level: delta > 0 ? .warning : .nominal,
             now: now
         )
         signalEventReferenceRSSIByID[device.id] = device.rssi
@@ -932,6 +1209,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         guard !staleIDs.isEmpty else { return }
 
         for id in staleIDs {
+            if let device = devicesByID[id] {
+                appendBlackBoxEvent(
+                    title: "Устройство пропало",
+                    detail: "\(device.name) · последнее \(device.rssi) dBm",
+                    level: .nominal,
+                    now: now
+                )
+            }
             devicesByID.removeValue(forKey: id)
             approachAlertedDeviceIDs.remove(id)
             approachReferenceDistanceByID.removeValue(forKey: id)
@@ -1002,6 +1287,11 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
     func centralManagerDidUpdateState(_ central: CBCentralManager) {
         authorization = CBCentralManager.authorization
         bluetoothState = central.state
+        appendBlackBoxEvent(
+            title: "Bluetooth",
+            detail: central.state.title,
+            level: central.state == .poweredOn ? .nominal : .critical
+        )
 
         if central.state == .poweredOn, scanningRequested {
             startScanning()
@@ -1019,6 +1309,8 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
     ) {
         let id = peripheral.identifier.uuidString
         let now = Date()
+        lastPacketAt = now
+        packetCount += 1
         let name = peripheral.name
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Без имени"
@@ -1064,6 +1356,12 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 deviceOrder.removeAll { $0 == id }
                 deviceOrder.insert(id, at: 0)
                 appendSignalEvent(deviceName: existing.name, detail: "подтверждённое сближение", kind: .approaching, now: now)
+                appendBlackBoxEvent(
+                    title: "Сближение подтверждено",
+                    detail: "\(existing.name) · \(existing.rssi) dBm · доверие \(confidence(for: existing).title)",
+                    level: (existing.rssi >= -55 || (existing.estimatedDistanceMeters ?? 120) <= 3) ? .critical : .warning,
+                    now: now
+                )
                 handleApproachAlert(existing, now: now)
             }
         } else {
@@ -1095,6 +1393,12 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             signalEventReferenceRSSIByID[id] = latestRSSI
             signalEventLastAtByID[id] = now
             appendSignalEvent(deviceName: newDevice.name, detail: "появилось · \(latestRSSI) dBm", kind: .neutral, now: now)
+            appendBlackBoxEvent(
+                title: "Новое устройство",
+                detail: "\(newDevice.name) · \(latestRSSI) dBm · \(String(id.prefix(8)))",
+                level: .nominal,
+                now: now
+            )
         }
 
         publishDeviceList()

@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var monitor: BluetoothMonitor
     @State private var isAnalysisSheetPresented = false
+    @State private var isInstrumentSheetPresented = false
     @State private var selectedDevice: DetectedDevice?
 
     private var theme: SentinelTheme {
@@ -28,6 +29,11 @@ struct ContentView: View {
             .toolbarBackground(theme.background, for: .navigationBar)
             .sheet(isPresented: $isAnalysisSheetPresented) {
                 AnalysisSheetView(events: monitor.signalEvents, theme: theme)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
+            .sheet(isPresented: $isInstrumentSheetPresented) {
+                InstrumentSheetView(monitor: monitor, theme: theme)
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
@@ -60,20 +66,34 @@ struct ContentView: View {
                             .minimumScaleFactor(0.82)
                     }
 
-                    Text(monitor.bluetoothState.title)
+                    Text("\(monitor.bluetoothState.title) · \(monitor.instrumentStatus.title)")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(theme.secondaryText)
                 }
 
                 Spacer()
 
-                VStack(alignment: .trailing, spacing: 0) {
-                    Text("\(monitor.devices.count)")
-                        .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(theme.primaryText)
-                    Text("в эфире")
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(theme.secondaryText)
+                HStack(alignment: .top, spacing: 10) {
+                    Button {
+                        isInstrumentSheetPresented = true
+                    } label: {
+                        Image(systemName: "gauge.with.dots.needle.33percent")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(theme.healthColor(monitor.instrumentStatus.level))
+                            .frame(width: 34, height: 34)
+                            .background(theme.softFill, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Открыть прибор")
+
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text("\(monitor.devices.count)")
+                            .font(.system(size: 34, weight: .bold, design: .rounded).monospacedDigit())
+                            .foregroundStyle(theme.primaryText)
+                        Text("в эфире")
+                            .font(.caption2.weight(.medium))
+                            .foregroundStyle(theme.secondaryText)
+                    }
                 }
             }
 
@@ -88,7 +108,13 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Показать анализ")
-                CompactMetric(title: "Тихий старт", value: monitor.isInitialBaselineActive ? "ON" : "OK", color: .green, theme: theme)
+                Button {
+                    isInstrumentSheetPresented = true
+                } label: {
+                    CompactMetric(title: "Надёжность", value: healthShortText, color: theme.healthColor(monitor.instrumentStatus.level), theme: theme)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Показать состояние прибора")
             }
         }
         .padding(14)
@@ -175,15 +201,25 @@ struct ContentView: View {
     }
 
     private var statusColor: Color {
-        if monitor.approachingDeviceCount > 0 { return .red }
-        return monitor.isScanning ? .green : .secondary
+        theme.threatColor(monitor.threatLevel)
     }
 
     private var operationStateText: String {
-        if monitor.approachingDeviceCount > 0 { return "Сближение" }
+        if monitor.threatLevel != .normal { return monitor.threatLevel.title }
         if monitor.isInitialBaselineActive { return "Тихий старт" }
         if monitor.isScanning { return "Эфир стабилен" }
         return "Скан остановлен"
+    }
+
+    private var healthShortText: String {
+        switch monitor.instrumentStatus.level {
+        case .nominal:
+            return "OK"
+        case .warning:
+            return "ВНИМ"
+        case .critical:
+            return "КРИТ"
+        }
     }
 
     private var airActivityLevel: CGFloat {
@@ -468,6 +504,204 @@ struct AnalysisSheetView: View {
             .padding(16)
         }
         .background(theme.background.ignoresSafeArea())
+    }
+}
+
+struct InstrumentSheetView: View {
+    @ObservedObject var monitor: BluetoothMonitor
+    let theme: SentinelTheme
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                SheetHeader(title: "Прибор", count: monitor.packetCount, theme: theme)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: "gauge.with.dots.needle.67percent")
+                            .font(.title3.weight(.bold))
+                            .foregroundStyle(theme.healthColor(monitor.instrumentStatus.level))
+                            .frame(width: 34, height: 34)
+                            .background(theme.softFill, in: Circle())
+
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(monitor.instrumentStatus.title)
+                                .font(.headline.weight(.semibold))
+                                .foregroundStyle(theme.primaryText)
+                            Text(monitor.instrumentStatus.detail)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(theme.secondaryText)
+                        }
+
+                        Spacer()
+
+                        VStack(alignment: .trailing, spacing: 3) {
+                            Text(monitor.threatLevel.title)
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(theme.threatColor(monitor.threatLevel))
+                            Text("уверенность \(monitor.alertConfidence.title)")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(theme.secondaryText)
+                        }
+                    }
+
+                    HStack(spacing: 8) {
+                        Button {
+                            monitor.restartFieldBaseline()
+                        } label: {
+                            Label("Развернуть пост", systemImage: "scope")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+
+                        Button {
+                            monitor.testAlert()
+                        } label: {
+                            Label("Сигнал", systemImage: "speaker.wave.2.fill")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    Text("Самотест")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
+
+                    ForEach(monitor.selfTestChecks) { check in
+                        InstrumentCheckRow(check: check, theme: theme)
+                    }
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: $monitor.externalSensorEnabled) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Внешний сенсор")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(theme.primaryText)
+                            Text("подготовлен режим подключения, источник не выбран")
+                                .font(.caption2.weight(.medium))
+                                .foregroundStyle(theme.secondaryText)
+                        }
+                    }
+                    .tint(.green)
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Text("Чёрный ящик")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(theme.primaryText)
+                        Spacer()
+                        Button {
+                            UIPasteboard.general.string = monitor.exportBlackBoxText()
+                        } label: {
+                            Image(systemName: "doc.on.doc.fill")
+                                .font(.caption.weight(.bold))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.mini)
+                        .accessibilityLabel("Скопировать журнал")
+                    }
+
+                    if monitor.blackBoxEvents.isEmpty {
+                        Text("Журнал пока пуст")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(theme.secondaryText)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 16)
+                    } else {
+                        ForEach(monitor.blackBoxEvents.prefix(16)) { entry in
+                            BlackBoxEventRow(entry: entry, theme: theme)
+                        }
+                    }
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+            }
+            .padding(16)
+        }
+        .background(theme.background.ignoresSafeArea())
+    }
+}
+
+struct InstrumentCheckRow: View {
+    let check: InstrumentCheck
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Circle()
+                .fill(theme.healthColor(check.level))
+                .frame(width: 8, height: 8)
+            Text(check.title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(theme.primaryText)
+                .frame(width: 88, alignment: .leading)
+            Text(check.detail)
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(theme.secondaryText)
+                .lineLimit(1)
+                .minimumScaleFactor(0.82)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+struct BlackBoxEventRow: View {
+    let entry: InstrumentLogEntry
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Circle()
+                .fill(theme.healthColor(entry.level))
+                .frame(width: 8, height: 8)
+                .padding(.top, 5)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.primaryText)
+                    .lineLimit(1)
+                Text(entry.detail)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            Spacer(minLength: 6)
+
+            Text(entry.timestamp, format: .dateTime.hour().minute().second())
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(theme.secondaryText)
+        }
     }
 }
 
@@ -841,6 +1075,30 @@ struct SentinelTheme {
 
     var metricOpacity: Double {
         colorScheme == .dark ? 0.20 : 0.12
+    }
+
+    func healthColor(_ level: InstrumentHealthLevel) -> Color {
+        switch level {
+        case .nominal:
+            return .green
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+
+    func threatColor(_ level: ThreatLevel) -> Color {
+        switch level {
+        case .normal:
+            return .green
+        case .watch:
+            return .blue
+        case .strengthening:
+            return .orange
+        case .confirmedApproach, .criticalApproach:
+            return .red
+        }
     }
 }
 
