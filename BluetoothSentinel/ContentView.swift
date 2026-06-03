@@ -181,7 +181,7 @@ struct ContentView: View {
     }
 
     private var airActivityLevel: CGFloat {
-        guard let strongestRSSI = monitor.devices.map(\.rssi).max() else { return 0 }
+        guard let strongestRSSI = monitor.devices.map(\.displayRSSI).max() else { return 0 }
         let clamped = min(max(Double(strongestRSSI), -100), -35)
         return CGFloat((clamped + 100) / 65)
     }
@@ -231,20 +231,20 @@ struct CompactDeviceRow: View {
             Spacer(minLength: 4)
 
             VStack(alignment: .trailing, spacing: 4) {
-                Text("\(device.rssi) dBm")
+                Text("\(device.displayRSSI) dBm")
                     .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(signalColor)
 
                 HStack(spacing: 4) {
                     DirectionMiniBadge(device: device, theme: theme)
-                    Text(device.estimatedDistanceText)
+                    Text(device.displayDistanceText)
                         .font(.caption2.monospacedDigit().weight(.bold))
                         .foregroundStyle(distanceColor)
                 }
             }
 
             VStack(alignment: .trailing, spacing: 4) {
-                SignalPowerScale(rssi: device.rssi, color: signalColor, theme: theme)
+                SignalPowerScale(rssi: device.displayRSSI, color: signalColor, theme: theme)
                 Text(device.signalTrendText)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(trendColor)
@@ -285,13 +285,13 @@ struct CompactDeviceRow: View {
     }
 
     private var signalColor: Color {
-        if device.rssi > -55 { return .green }
-        if device.rssi > -75 { return .orange }
+        if device.displayRSSI > -55 { return .green }
+        if device.displayRSSI > -75 { return .orange }
         return theme.secondaryText
     }
 
     private var distanceColor: Color {
-        guard let meters = device.estimatedDistanceMeters else { return theme.secondaryText }
+        guard let meters = device.displayDistanceMeters else { return theme.secondaryText }
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
         return theme.secondaryText
@@ -694,8 +694,8 @@ struct DeviceDetailSheet: View {
                 }
 
                 HStack(spacing: 8) {
-                    DetailMetric(title: "RSSI", value: "\(device.rssi)", unit: "dBm", color: signalColor, theme: theme)
-                    DetailMetric(title: "Дистанция", value: device.estimatedDistanceText, unit: "", color: distanceColor, theme: theme)
+                    DetailMetric(title: "RSSI 3с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
+                    DetailMetric(title: "Дистанция", value: device.displayDistanceText, unit: "", color: distanceColor, theme: theme)
                     DetailMetric(title: "Курс", value: device.directionShortName, unit: device.directionConfidenceText, color: directionColor, theme: theme)
                 }
 
@@ -745,13 +745,13 @@ struct DeviceDetailSheet: View {
     }
 
     private var signalColor: Color {
-        if device.rssi > -55 { return .green }
-        if device.rssi > -75 { return .orange }
+        if device.displayRSSI > -55 { return .green }
+        if device.displayRSSI > -75 { return .orange }
         return theme.secondaryText
     }
 
     private var distanceColor: Color {
-        guard let meters = device.estimatedDistanceMeters else { return theme.secondaryText }
+        guard let meters = device.displayDistanceMeters else { return theme.secondaryText }
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
         return theme.secondaryText

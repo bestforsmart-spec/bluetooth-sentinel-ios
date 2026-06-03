@@ -159,13 +159,39 @@ struct DetectedDevice: Identifiable, Equatable {
         trustState == .unknown
     }
 
+    var displayRSSI: Int {
+        Int(displayRSSIDouble.rounded())
+    }
+
+    var displayRSSIDouble: Double {
+        let now = lastSeen
+        let samples = signalSamples.filter { now.timeIntervalSince($0.timestamp) <= 3 }
+        guard !samples.isEmpty else { return smoothedRSSI }
+
+        let total = samples.reduce(0.0) { partial, sample in
+            partial + Double(sample.rssi)
+        }
+        return total / Double(samples.count)
+    }
+
+    var displayDistanceMeters: Double? {
+        BluetoothDistanceEstimator.estimateMeters(fromRSSI: displayRSSIDouble)
+    }
+
+    var displayDistanceText: String {
+        formattedDistanceText(for: displayDistanceMeters)
+    }
+
     var estimatedDistanceMeters: Double? {
         BluetoothDistanceEstimator.estimateMeters(fromRSSI: smoothedRSSI)
     }
 
     var estimatedDistanceText: String {
-        guard let meters = estimatedDistanceMeters else { return "~-- м" }
+        formattedDistanceText(for: estimatedDistanceMeters)
+    }
 
+    private func formattedDistanceText(for meters: Double?) -> String {
+        guard let meters else { return "~-- м" }
         if meters < 1 {
             return "~<1 м"
         }
