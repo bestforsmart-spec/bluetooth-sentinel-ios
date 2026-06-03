@@ -434,7 +434,8 @@ enum DeviceKind: Equatable {
 }
 
 final class BluetoothMonitor: NSObject, ObservableObject {
-    private static let autoRememberInterval: TimeInterval = 10
+    private static let autoRememberInterval: TimeInterval = 300
+    private static let autoRememberMinimumSamples = 20
     private static let fieldScanRefreshInterval: TimeInterval = 25
     private static let maximumSensitivityScanRefreshInterval: TimeInterval = 10
     private static let staleDeviceInterval: TimeInterval = 60
@@ -1281,22 +1282,32 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     private func rememberLongVisibleUnknownDevices(now: Date = Date()) {
-        guard !fieldModeEnabled else { return }
-
         var changed = false
 
         for id in deviceOrder {
             guard var device = devicesByID[id],
                   device.trustState == .unknown,
-                  now.timeIntervalSince(device.firstSeen) >= Self.autoRememberInterval
+                  now.timeIntervalSince(device.firstSeen) >= Self.autoRememberInterval,
+                  now.timeIntervalSince(device.lastSeen) <= Self.packetFreshInterval,
+                  device.signalSamples.count >= Self.autoRememberMinimumSamples,
+                  device.approachState != .approaching,
+                  !approachAlertedDeviceIDs.contains(id)
             else {
                 continue
             }
 
             knownDeviceIDs.insert(id)
+            sessionNewDeviceIDs.remove(id)
             device.trustState = .known
             devicesByID[id] = device
             changed = true
+
+            appendBlackBoxEvent(
+                title: "Устройство стало известным",
+                detail: "\(device.name) · наблюдение 5 мин · \(device.signalSamples.count) замеров",
+                level: .nominal,
+                now: now
+            )
         }
 
         guard changed else { return }
@@ -1321,6 +1332,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 )
             }
             devicesByID.removeValue(forKey: id)
+            sessionNewDeviceIDs.remove(id)
             approachAlertedDeviceIDs.remove(id)
             approachReferenceDistanceByID.removeValue(forKey: id)
             approachReferenceRSSIByID.removeValue(forKey: id)
@@ -1373,7 +1385,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         let wasUnknown = trustState(for: id) == .unknown
         let shouldAnnounceDiscovery = wasUnknown && initialBaselineCompleted
         var currentTrustState = trustState(for: id)
-        if wasUnknown {
+        if wasUnknown && !initialBaselineCompleted {
             rememberKnownDevice(id)
             currentTrustState = .known
         }
@@ -1401,13 +1413,6 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             existing.lastSeen = now
             existing.advertisement = summary
             existing.trustState = currentTrustState
-            if !fieldModeEnabled,
-               existing.trustState == .unknown,
-               now.timeIntervalSince(existing.firstSeen) >= Self.autoRememberInterval {
-                knownDeviceIDs.insert(id)
-                existing.trustState = .known
-                persistDeviceLists()
-            }
             recordSignalEventIfNeeded(for: existing, previousRSSI: previousRSSI, now: now)
             let isApproaching = updateApproachState(for: &existing, now: now)
             devicesByID[id] = existing
@@ -1445,7 +1450,9 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 ]
             )
             devicesByID[id] = newDevice
-            sessionNewDeviceIDs.insert(id)
+            if newDevice.trustState == .unknown {
+                sessionNewDeviceIDs.insert(id)
+            }
             deviceOrder.removeAll { $0 == id }
             deviceOrder.insert(id, at: 0)
             seedApproachReferenceIfNeeded(for: newDevice)
