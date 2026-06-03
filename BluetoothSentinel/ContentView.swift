@@ -4,6 +4,7 @@ import SwiftUI
 struct ContentView: View {
     @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var monitor: BluetoothMonitor
+    @State private var isAnalysisVisible = false
 
     private var theme: SentinelTheme {
         SentinelTheme(colorScheme: colorScheme)
@@ -15,7 +16,9 @@ struct ContentView: View {
                 VStack(spacing: 14) {
                     statusPanel
                     controlPanel
-                    analysisPanel
+                    if isAnalysisVisible {
+                        analysisPanel
+                    }
                     devicesPanel
                 }
                 .padding(16)
@@ -62,7 +65,15 @@ struct ContentView: View {
 
             HStack(spacing: 8) {
                 CompactMetric(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red, theme: theme)
-                CompactMetric(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue, theme: theme)
+                Button {
+                    withAnimation(.snappy(duration: 0.22)) {
+                        isAnalysisVisible.toggle()
+                    }
+                } label: {
+                    CompactMetric(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue, theme: theme)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(isAnalysisVisible ? "Скрыть анализ" : "Показать анализ")
                 CompactMetric(title: "Тихий старт", value: monitor.isInitialBaselineActive ? "ON" : "OK", color: .green, theme: theme)
             }
         }
@@ -87,11 +98,12 @@ struct ContentView: View {
                 Button {
                     monitor.trustAllVisibleDevices()
                 } label: {
-                    Label("Доверять текущим", systemImage: "checkmark.shield.fill")
-                        .frame(maxWidth: .infinity)
+                    Label("Доверять", systemImage: "checkmark.shield.fill")
+                        .font(.caption.weight(.semibold))
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .fixedSize()
                 .disabled(monitor.devices.isEmpty)
 
                 Button(role: .destructive) {
@@ -144,33 +156,38 @@ struct ContentView: View {
 
     @ViewBuilder
     private var analysisPanel: some View {
-        if !monitor.signalEvents.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Анализ")
-                        .font(.headline.weight(.semibold))
-                        .foregroundStyle(theme.primaryText)
-                    Spacer()
-                    Text("\(monitor.signalEvents.count)")
-                        .font(.caption.monospacedDigit().weight(.bold))
-                        .foregroundStyle(theme.secondaryText)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(theme.softFill, in: Capsule())
-                }
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Анализ")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(theme.primaryText)
+                Spacer()
+                Text("\(monitor.signalEvents.count)")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(theme.secondaryText)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(theme.softFill, in: Capsule())
+            }
 
+            if monitor.signalEvents.isEmpty {
+                Text("История появится после новых устройств или заметного изменения сигнала.")
+                    .font(.caption)
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(2)
+            } else {
                 VStack(spacing: 7) {
                     ForEach(monitor.signalEvents.prefix(5)) { event in
                         SignalEventRow(event: event, theme: theme)
                     }
                 }
             }
-            .padding(14)
-            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(theme.cardStroke)
-            }
+        }
+        .padding(14)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(theme.cardStroke)
         }
     }
 
@@ -434,9 +451,39 @@ struct DirectionMiniBadge: View {
                 .rotationEffect(.degrees(device.directionArrowDegrees ?? 0))
             Text(device.directionShortName)
                 .font(.caption2.weight(.bold))
+            if device.directionConfidence != .scanning {
+                Text(device.directionConfidenceText)
+                    .font(.caption2.weight(.medium))
+            }
         }
-        .foregroundStyle(device.directionArrowDegrees == nil ? theme.secondaryText : .blue)
-        .accessibilityLabel("Направление \(device.directionName)")
+        .foregroundStyle(directionColor)
+        .accessibilityLabel("Направление \(device.directionName), уверенность \(accessibilityConfidence)")
+    }
+
+    private var directionColor: Color {
+        switch device.directionConfidence {
+        case .scanning:
+            return theme.secondaryText
+        case .low:
+            return .blue.opacity(0.72)
+        case .medium:
+            return .blue
+        case .high:
+            return .green
+        }
+    }
+
+    private var accessibilityConfidence: String {
+        switch device.directionConfidence {
+        case .scanning:
+            return "сканирование"
+        case .low:
+            return "низкая"
+        case .medium:
+            return "средняя"
+        case .high:
+            return "высокая"
+        }
     }
 }
 
