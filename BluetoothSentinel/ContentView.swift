@@ -192,8 +192,6 @@ struct CompactDeviceRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            SignalDot(color: signalColor)
-
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(device.name)
@@ -1168,21 +1166,6 @@ struct CompactMetric: View {
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
         .background(color.opacity(theme.metricOpacity), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-struct SignalDot: View {
-    let color: Color
-
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(color.opacity(0.16))
-            Circle()
-                .fill(color)
-                .frame(width: 9, height: 9)
-        }
-        .frame(width: 28, height: 28)
     }
 }
 
