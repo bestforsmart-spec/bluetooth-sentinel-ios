@@ -201,7 +201,7 @@ struct CompactDeviceRow: View {
     let theme: SentinelTheme
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             SignalDot(color: signalColor)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -232,7 +232,7 @@ struct CompactDeviceRow: View {
                 .foregroundStyle(theme.secondaryText)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: 4)
 
             VStack(alignment: .trailing, spacing: 4) {
                 Text("\(device.rssi) dBm")
@@ -248,11 +248,14 @@ struct CompactDeviceRow: View {
             }
 
             VStack(alignment: .trailing, spacing: 4) {
-                SignalHistoryBars(samples: Array(device.signalSamples.suffix(14)), color: signalColor, theme: theme)
+                SignalPowerScale(rssi: device.rssi, color: signalColor, theme: theme)
                 Text(device.signalTrendText)
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(trendColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
             }
+            .frame(width: 56, alignment: .trailing)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -349,29 +352,29 @@ struct SignalEventRow: View {
     }
 }
 
-struct SignalHistoryBars: View {
-    let samples: [SignalSample]
+struct SignalPowerScale: View {
+    let rssi: Int
     let color: Color
     let theme: SentinelTheme
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 2) {
-            ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
-                Capsule()
-                    .fill(color.opacity(0.78))
-                    .frame(width: 3, height: barHeight(for: sample.rssi))
-            }
+        ZStack(alignment: .leading) {
+            Capsule()
+                .fill(theme.softFill)
+
+            Capsule()
+                .fill(color.opacity(0.82))
+                .frame(width: 46 * signalLevel)
         }
-        .frame(width: 54, height: 18, alignment: .bottomLeading)
-        .padding(.horizontal, 5)
-        .padding(.vertical, 4)
-        .background(theme.softFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .frame(width: 46, height: 8)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 8)
+        .background(theme.softFill.opacity(0.75), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private func barHeight(for rssi: Int) -> CGFloat {
+    private var signalLevel: CGFloat {
         let clamped = min(max(Double(rssi), -100), -35)
-        let normalized = (clamped + 100) / 65
-        return CGFloat(4 + (normalized * 14))
+        return CGFloat((clamped + 100) / 65)
     }
 }
 
