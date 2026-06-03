@@ -314,12 +314,15 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         self.trustedDeviceIDs = Set(storedTrustedIDs)
         self.knownDeviceIDs = Set(storedKnownIDs).union(storedTrustedIDs)
         self.quietDeviceIDs = Set(storedQuietIDs).subtracting(storedTrustedIDs)
-        self.alertsEnabled = UserDefaults.standard.object(forKey: Self.alertsEnabledKey) as? Bool ?? true
-        self.fieldModeEnabled = UserDefaults.standard.object(forKey: Self.fieldModeEnabledKey) as? Bool ?? true
-        self.maximumSensitivityEnabled = UserDefaults.standard.object(forKey: Self.maximumSensitivityEnabledKey) as? Bool ?? false
+        self.alertsEnabled = true
+        self.fieldModeEnabled = true
+        self.maximumSensitivityEnabled = true
         self.vibrationOnlyEnabled = UserDefaults.standard.object(forKey: Self.vibrationOnlyEnabledKey) as? Bool ?? false
         self.initialBaselineCompleted = UserDefaults.standard.object(forKey: Self.initialBaselineCompletedKey) as? Bool ?? false
         super.init()
+        UserDefaults.standard.set(true, forKey: Self.alertsEnabledKey)
+        UserDefaults.standard.set(true, forKey: Self.fieldModeEnabledKey)
+        UserDefaults.standard.set(true, forKey: Self.maximumSensitivityEnabledKey)
         self.locationManager.delegate = self
         self.locationManager.headingFilter = 5
         self.centralManager = CBCentralManager(

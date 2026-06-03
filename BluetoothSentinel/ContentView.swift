@@ -2,375 +2,348 @@ import CoreBluetooth
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var monitor: BluetoothMonitor
+
+    private var theme: SentinelTheme {
+        SentinelTheme(colorScheme: colorScheme)
+    }
 
     var body: some View {
         NavigationStack {
-            List {
-                Section {
+            ScrollView {
+                VStack(spacing: 14) {
                     statusPanel
-                }
-
-                Section {
                     controlPanel
+                    devicesPanel
                 }
-
-                Section("Список устройств") {
-                    if monitor.devices.isEmpty {
-                        ContentUnavailableView(
-                            "Пока пусто",
-                            systemImage: "dot.radiowaves.left.and.right",
-                            description: Text("Включите Bluetooth и оставьте приложение активным.")
-                        )
-                    } else {
-                        ForEach(monitor.devices) { device in
-                            DeviceRow(device: device, fieldModeEnabled: monitor.fieldModeEnabled) {
-                                monitor.trustDevice(device)
-                            }
-                        }
-                        .transaction { transaction in
-                            transaction.animation = nil
-                        }
-                    }
-                }
+                .padding(16)
             }
+            .background(theme.background.ignoresSafeArea())
             .navigationTitle("BT Sentinel")
-            .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {
-                        monitor.testAlert()
-                    } label: {
-                        Image(systemName: "speaker.wave.3.fill")
-                    }
-                    .accessibilityLabel("Тест сигнала")
-
-                    Button {
-                        monitor.clearSession()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .accessibilityLabel("Очистить список")
-                }
-            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbarBackground(theme.background, for: .navigationBar)
         }
     }
 
     private var statusPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 12) {
-                Image(systemName: monitor.isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
-                    .font(.title2)
-                    .foregroundStyle(monitor.isScanning ? .green : .secondary)
+                ZStack {
+                    Circle()
+                        .fill(statusColor.opacity(0.16))
+                    Image(systemName: monitor.isScanning ? "antenna.radiowaves.left.and.right" : "antenna.radiowaves.left.and.right.slash")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(statusColor)
+                }
+                .frame(width: 44, height: 44)
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     Text(monitor.bluetoothState.title)
-                        .font(.headline)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
                     Text(monitor.isScanning ? "Сканирование активно" : "Сканирование остановлено")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                    Text(monitor.maximumSensitivityEnabled ? "Максимальная чувствительность" : (monitor.fieldModeEnabled ? "Полевой режим: максимум дальности" : "Обычный режим"))
-                        .font(.caption.bold())
-                        .foregroundStyle(monitor.maximumSensitivityEnabled ? .orange : (monitor.fieldModeEnabled ? .red : .secondary))
+                        .font(.caption)
+                        .foregroundStyle(theme.secondaryText)
                 }
 
                 Spacer()
+
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("\(monitor.devices.count)")
+                        .font(.title3.monospacedDigit().weight(.bold))
+                        .foregroundStyle(theme.primaryText)
+                    Text("в эфире")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(theme.secondaryText)
+                }
             }
 
-            HStack(spacing: 10) {
-                StatPill(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red)
-                StatPill(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue)
-                StatPill(title: "В эфире", value: "\(monitor.devices.count)", color: .green)
+            HStack(spacing: 8) {
+                CompactMetric(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red, theme: theme)
+                CompactMetric(title: "Известные", value: "\(monitor.knownDeviceCount)", color: .blue, theme: theme)
+                CompactMetric(title: "Тихий старт", value: monitor.isInitialBaselineActive ? "ON" : "OK", color: .green, theme: theme)
             }
         }
-        .padding(.vertical, 4)
+        .padding(14)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(theme.cardStroke)
+        }
     }
 
     private var controlPanel: some View {
         VStack(spacing: 12) {
-            Button {
-                monitor.toggleScanning()
-            } label: {
-                Label(monitor.isScanning ? "Остановить" : "Сканировать", systemImage: monitor.isScanning ? "pause.fill" : "play.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(monitor.bluetoothState != .poweredOn)
-
-            Toggle(isOn: $monitor.alertsEnabled) {
-                Label("Звуковой сигнал", systemImage: "bell.and.waves.left.and.right.fill")
-            }
-
-            Toggle(isOn: $monitor.fieldModeEnabled) {
-                Label("Полевой режим", systemImage: "shield.lefthalf.filled")
-            }
-
-            Toggle(isOn: $monitor.maximumSensitivityEnabled) {
-                Label("Максимальная чувствительность", systemImage: "antenna.radiowaves.left.and.right")
-            }
-
             Toggle(isOn: $monitor.vibrationOnlyEnabled) {
-                Label("Беззвучно: вибро", systemImage: "iphone.radiowaves.left.and.right")
+                Label("Беззвучный режим", systemImage: monitor.vibrationOnlyEnabled ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(theme.primaryText)
             }
-            .disabled(!monitor.alertsEnabled)
+            .tint(.orange)
 
-            HStack {
+            HStack(spacing: 10) {
                 Button {
                     monitor.trustAllVisibleDevices()
                 } label: {
                     Label("Доверять текущим", systemImage: "checkmark.shield.fill")
+                        .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
                 .disabled(monitor.devices.isEmpty)
-
-                Spacer()
 
                 Button(role: .destructive) {
                     monitor.resetTrustedDevices()
                 } label: {
                     Label("Сброс доверия", systemImage: "xmark.shield.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+        .padding(14)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(theme.cardStroke)
+        }
+    }
+
+    private var devicesPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Устройства")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(theme.primaryText)
+                Spacer()
+                Text("\(monitor.devices.count)")
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(theme.secondaryText)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(theme.softFill, in: Capsule())
+            }
+
+            if monitor.devices.isEmpty {
+                EmptyDevicesView(theme: theme)
+            } else {
+                LazyVStack(spacing: 8) {
+                    ForEach(monitor.devices) { device in
+                        CompactDeviceRow(device: device, theme: theme)
+                            .transaction { transaction in
+                                transaction.animation = nil
+                            }
+                    }
                 }
             }
-            .font(.subheadline)
         }
+    }
+
+    private var statusColor: Color {
+        monitor.isScanning ? .green : .secondary
     }
 }
 
-struct DeviceRow: View {
+struct CompactDeviceRow: View {
     let device: DetectedDevice
-    let fieldModeEnabled: Bool
-    let trustDevice: () -> Void
+    let theme: SentinelTheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
+        HStack(spacing: 10) {
+            SignalDot(color: signalColor)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
                     Text(device.name)
-                        .font(.headline)
-                    Text(device.id)
-                        .font(.caption2.monospaced())
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    DeviceKindBadge(kind: device.deviceKind)
-                }
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
 
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("\(device.rssi) dBm")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(signalColor)
-                    Text(device.estimatedDistanceText)
-                        .font(.caption.bold().monospacedDigit())
-                        .foregroundStyle(distanceColor)
                     if device.approachState == .approaching {
-                        ApproachBadge(state: device.approachState)
+                        Image(systemName: "arrow.down.left.and.arrow.up.right")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(.red)
                     }
-                    DetectionZoneBadge(zone: device.detectionZone, isUnknown: device.trustState == .unknown, fieldModeEnabled: fieldModeEnabled)
-                    DirectionBadge(device: device)
-                    Label(trustStatusText, systemImage: trustStatusImage)
-                        .font(.caption2.bold())
-                        .foregroundStyle(trustStatusColor)
                 }
+
+                HStack(spacing: 6) {
+                    Image(systemName: device.deviceKind.symbolName)
+                        .font(.caption2)
+                    Text(device.deviceKind.title)
+                        .lineLimit(1)
+                    Text(shortIdentifier)
+                        .font(.caption2.monospaced())
+                        .lineLimit(1)
+                }
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(theme.secondaryText)
             }
 
-            Text(device.advertisement)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
 
-            HStack {
-                Label {
-                    Text(device.lastSeen, format: .relative(presentation: .named))
-                } icon: {
-                    Image(systemName: "clock")
-                }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("\(device.rssi) dBm")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(signalColor)
 
-                Spacer()
-
-                if !device.isTrusted {
-                    Button("Доверять") {
-                        trustDevice()
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                HStack(spacing: 4) {
+                    DirectionMiniBadge(device: device, theme: theme)
+                    Text(device.estimatedDistanceText)
+                        .font(.caption2.monospacedDigit().weight(.bold))
+                        .foregroundStyle(distanceColor)
                 }
             }
         }
-        .padding(.vertical, 6)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .leading) {
+            if device.trustState == .trusted {
+                Rectangle()
+                    .fill(.green)
+                    .frame(width: 3)
+                    .clipShape(Capsule())
+                    .padding(.vertical, 10)
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(device.approachState == .approaching ? Color.red.opacity(0.45) : theme.cardStroke)
+        }
+    }
+
+    private var shortIdentifier: String {
+        String(device.id.prefix(8))
     }
 
     private var signalColor: Color {
         if device.rssi > -55 { return .green }
         if device.rssi > -75 { return .orange }
-        return .secondary
+        return theme.secondaryText
     }
 
     private var distanceColor: Color {
-        guard let meters = device.estimatedDistanceMeters else { return .secondary }
+        guard let meters = device.estimatedDistanceMeters else { return theme.secondaryText }
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
-        return .secondary
-    }
-
-    private var trustStatusText: String {
-        switch device.trustState {
-        case .unknown:
-            return "NEW"
-        case .known:
-            return "KNOWN"
-        case .quiet:
-            return "QUIET"
-        case .trusted:
-            return "TRUST"
-        }
-    }
-
-    private var trustStatusImage: String {
-        switch device.trustState {
-        case .unknown:
-            return "exclamationmark.triangle.fill"
-        case .known:
-            return "checkmark.circle.fill"
-        case .quiet:
-            return "speaker.slash.fill"
-        case .trusted:
-            return "checkmark.shield.fill"
-        }
-    }
-
-    private var trustStatusColor: Color {
-        switch device.trustState {
-        case .unknown:
-            return .red
-        case .known:
-            return .blue
-        case .quiet:
-            return .orange
-        case .trusted:
-            return .green
-        }
+        return theme.secondaryText
     }
 }
 
-struct DeviceKindBadge: View {
-    let kind: DeviceKind
+struct EmptyDevicesView: View {
+    let theme: SentinelTheme
 
     var body: some View {
-        Label {
-            Text("\(kind.confidenceText): \(kind.title)")
-        } icon: {
-            Image(systemName: kind.symbolName)
+        VStack(spacing: 8) {
+            Image(systemName: "dot.radiowaves.left.and.right")
+                .font(.title2)
+                .foregroundStyle(theme.secondaryText)
+            Text("Пока пусто")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(theme.primaryText)
+            Text("Оставьте приложение открытым для максимального BLE-сканирования.")
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(theme.secondaryText)
         }
-        .font(.caption2.bold())
-        .foregroundStyle(color)
-        .padding(.top, 2)
-        .accessibilityLabel("Тип устройства: \(kind.confidenceText) \(kind.title)")
-    }
-
-    private var color: Color {
-        switch kind {
-        case .phone, .computer:
-            return .blue
-        case .drone:
-            return .red
-        case .audio, .watch:
-            return .purple
-        case .tracker:
-            return .orange
-        case .vehicle:
-            return .teal
-        case .keyboardMouse, .smartHome:
-            return .green
-        case .appleDevice:
-            return .secondary
-        case .unknown:
-            return .secondary
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .padding(.horizontal, 16)
+        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(theme.cardStroke)
         }
     }
 }
 
-struct ApproachBadge: View {
-    let state: ApproachState
-
-    var body: some View {
-        Label(state.title, systemImage: state.symbolName)
-            .font(.caption2.bold())
-            .foregroundStyle(.red)
-            .accessibilityLabel(state.title)
-    }
-}
-
-struct DetectionZoneBadge: View {
-    let zone: DetectionZone
-    let isUnknown: Bool
-    let fieldModeEnabled: Bool
-
-    var body: some View {
-        Label(zone.title, systemImage: zone.symbolName)
-            .font(.caption2.bold())
-            .foregroundStyle(color)
-            .accessibilityLabel("Зона обнаружения: \(zone.title)")
-    }
-
-    private var color: Color {
-        if fieldModeEnabled, isUnknown {
-            return .red
-        }
-
-        switch zone {
-        case .immediate:
-            return .red
-        case .close:
-            return .orange
-        case .far:
-            return .blue
-        case .edge:
-            return .secondary
-        case .unknown:
-            return .secondary
-        }
-    }
-}
-
-struct DirectionBadge: View {
-    let device: DetectedDevice
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: device.directionArrowDegrees == nil ? "location.north.line" : "location.north.fill")
-                .font(.caption2)
-                .rotationEffect(.degrees(device.directionArrowDegrees ?? 0))
-                .animation(.easeOut(duration: 0.18), value: device.directionArrowDegrees ?? 0)
-
-            Text(device.directionShortName)
-                .font(.caption2.bold())
-                .monospacedDigit()
-        }
-        .foregroundStyle(directionColor)
-        .accessibilityLabel("Направление \(device.directionName)")
-    }
-
-    private var directionColor: Color {
-        device.directionArrowDegrees == nil ? .secondary : .blue
-    }
-}
-
-struct StatPill: View {
+struct CompactMetric: View {
     let title: String
     let value: String
     let color: Color
+    let theme: SentinelTheme
 
     var body: some View {
         VStack(spacing: 2) {
             Text(value)
-                .font(.headline.monospacedDigit())
+                .font(.subheadline.monospacedDigit().weight(.bold))
+                .foregroundStyle(theme.primaryText)
             Text(title)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .foregroundStyle(theme.secondaryText)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
-        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .background(color.opacity(theme.metricOpacity), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+struct SignalDot: View {
+    let color: Color
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(color.opacity(0.16))
+            Circle()
+                .fill(color)
+                .frame(width: 9, height: 9)
+        }
+        .frame(width: 28, height: 28)
+    }
+}
+
+struct DirectionMiniBadge: View {
+    let device: DetectedDevice
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: device.directionArrowDegrees == nil ? "location.north.line" : "location.north.fill")
+                .font(.caption2)
+                .rotationEffect(.degrees(device.directionArrowDegrees ?? 0))
+            Text(device.directionShortName)
+                .font(.caption2.weight(.bold))
+        }
+        .foregroundStyle(device.directionArrowDegrees == nil ? theme.secondaryText : .blue)
+        .accessibilityLabel("Направление \(device.directionName)")
+    }
+}
+
+struct SentinelTheme {
+    let colorScheme: ColorScheme
+
+    var background: Color {
+        colorScheme == .dark ? Color(red: 0.05, green: 0.06, blue: 0.08) : Color(red: 0.95, green: 0.96, blue: 0.98)
+    }
+
+    var cardBackground: Color {
+        colorScheme == .dark ? Color(red: 0.10, green: 0.11, blue: 0.14) : .white
+    }
+
+    var softFill: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.05)
+    }
+
+    var cardStroke: Color {
+        colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.07)
+    }
+
+    var primaryText: Color {
+        colorScheme == .dark ? .white : Color(red: 0.08, green: 0.10, blue: 0.13)
+    }
+
+    var secondaryText: Color {
+        colorScheme == .dark ? Color.white.opacity(0.62) : Color.black.opacity(0.58)
+    }
+
+    var metricOpacity: Double {
+        colorScheme == .dark ? 0.20 : 0.12
     }
 }
 
