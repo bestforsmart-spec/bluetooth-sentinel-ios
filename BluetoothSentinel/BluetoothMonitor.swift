@@ -564,6 +564,11 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published var vibrationOnlyEnabled: Bool {
         didSet {
             UserDefaults.standard.set(vibrationOnlyEnabled, forKey: Self.vibrationOnlyEnabledKey)
+            if oldValue, !vibrationOnlyEnabled {
+                soundPlayer.playSoundEnabledChirp()
+            } else if !oldValue, vibrationOnlyEnabled {
+                soundPlayer.playVibration()
+            }
         }
     }
     @Published var externalSensorEnabled: Bool {

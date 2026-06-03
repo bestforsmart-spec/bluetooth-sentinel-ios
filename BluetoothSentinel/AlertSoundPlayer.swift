@@ -9,11 +9,23 @@ final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
         configureAudioSession()
 
         Task { @MainActor in
-            playTone(frequency: 740, duration: 0.12)
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            playTone(frequency: 980, duration: 0.12)
-            try? await Task.sleep(nanoseconds: 150_000_000)
-            playTone(frequency: 740, duration: 0.20)
+            playTone(frequency: 880, duration: 0.22, volume: 1.0)
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            playTone(frequency: 1_240, duration: 0.22, volume: 1.0)
+            try? await Task.sleep(nanoseconds: 260_000_000)
+            playTone(frequency: 1_560, duration: 0.34, volume: 1.0)
+            AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
+        }
+    }
+
+    func playSoundEnabledChirp() {
+        configureAudioSession()
+
+        Task { @MainActor in
+            playTone(frequency: 1_120, duration: 0.16, volume: 0.95)
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            playTone(frequency: 1_460, duration: 0.16, volume: 0.95)
         }
     }
 
@@ -38,19 +50,20 @@ final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
     private func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
             try session.setActive(true)
         } catch {
             // The generated tone can still play in many foreground cases.
         }
     }
 
-    private func playTone(frequency: Double, duration: Double) {
+    private func playTone(frequency: Double, duration: Double, volume: Float) {
         guard let data = ToneGenerator.wavData(frequency: frequency, duration: duration) else { return }
 
         do {
             let player = try AVAudioPlayer(data: data)
             player.delegate = self
+            player.volume = volume
             player.prepareToPlay()
             players.append(player)
             player.play()
@@ -90,7 +103,7 @@ enum ToneGenerator {
             let fadeIn = min(1.0, Double(sampleIndex) / Double(sampleRate) / 0.015)
             let fadeOut = min(1.0, Double(sampleCount - sampleIndex) / Double(sampleRate) / 0.025)
             let envelope = min(fadeIn, fadeOut)
-            let value = sin(2.0 * .pi * frequency * progress) * envelope * 0.48
+            let value = sin(2.0 * .pi * frequency * progress) * envelope * 0.92
             data.appendInt16LE(Int16(value * Double(Int16.max)))
         }
 
