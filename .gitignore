@@ -1,5 +1,7 @@
 DerivedData/
 build/
+**/.gradle/
+**/local.properties
 *.xcuserstate
 *.xccheckout
 *.moved-aside

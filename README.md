@@ -35,3 +35,7 @@ RSSI не является точной дистанцией. Тело, рель
 ## Передача другу
 
 Инструкция для установки на другой iPhone лежит в `docs/FRIEND_INSTALL.md`.
+
+## Android APK
+
+Android-версия лежит в папке `android/`. Инструкция по установке APK: `android/README.md`.
