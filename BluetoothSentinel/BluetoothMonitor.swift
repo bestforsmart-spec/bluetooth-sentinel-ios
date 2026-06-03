@@ -615,6 +615,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         sessionNewDeviceIDs.count
     }
 
+    var newDevices: [DetectedDevice] {
+        devices.filter { $0.trustState == .unknown }
+    }
+
     var approachingDeviceCount: Int {
         devices.filter { $0.approachState == .approaching }.count
     }

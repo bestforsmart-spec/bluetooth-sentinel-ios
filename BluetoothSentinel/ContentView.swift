@@ -7,6 +7,7 @@ struct ContentView: View {
     @AppStorage("darkThemeEnabled") private var darkThemeEnabled = false
     @State private var isAnalysisSheetPresented = false
     @State private var isInstrumentSheetPresented = false
+    @State private var isNewDevicesSheetPresented = false
     @State private var selectedDevice: DetectedDevice?
 
     private var theme: SentinelTheme {
@@ -29,6 +30,11 @@ struct ContentView: View {
         .preferredColorScheme(activeColorScheme)
         .sheet(isPresented: $isAnalysisSheetPresented) {
             AnalysisSheetView(events: monitor.signalEvents, theme: theme)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isNewDevicesSheetPresented) {
+            NewDevicesSheetView(monitor: monitor, theme: theme)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -111,7 +117,14 @@ struct ContentView: View {
             RadarActivityBar(level: airActivityLevel, accent: statusColor, theme: theme)
 
             HStack(spacing: 8) {
-                CompactMetric(title: "Новые", value: "\(monitor.newDeviceCount)", color: .green, theme: theme)
+                Button {
+                    isNewDevicesSheetPresented = true
+                } label: {
+                    CompactMetric(title: "Новые", value: "\(monitor.newDeviceCount)", color: .green, theme: theme)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Показать новые устройства")
+
                 Button {
                     isAnalysisSheetPresented = true
                 } label: {
@@ -310,6 +323,114 @@ struct CompactDeviceRow: View {
         if device.approachState == .approaching { return .red }
         if isFresh { return .blue }
         return theme.secondaryText
+    }
+}
+
+struct NewDevicesSheetView: View {
+    @ObservedObject var monitor: BluetoothMonitor
+    let theme: SentinelTheme
+
+    private var devices: [DetectedDevice] {
+        monitor.newDevices
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Новые")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(theme.primaryText)
+                Spacer()
+                Text("\(devices.count)")
+                    .font(.headline.monospacedDigit().weight(.bold))
+                    .foregroundStyle(theme.primaryText)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(theme.softFill, in: Capsule())
+            }
+
+            if devices.isEmpty {
+                Spacer()
+                Text("0")
+                    .font(.system(size: 44, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(theme.secondaryText)
+                    .frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 8) {
+                        ForEach(devices) { device in
+                            NewDeviceSheetRow(device: device, theme: theme)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(18)
+        .background(theme.background.ignoresSafeArea())
+    }
+}
+
+struct NewDeviceSheetRow: View {
+    let device: DetectedDevice
+    let theme: SentinelTheme
+
+    var body: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { context in
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(device.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+
+                    HStack(spacing: 6) {
+                        Image(systemName: device.deviceKind.symbolName)
+                            .font(.caption2)
+                        Text(String(device.id.prefix(8)))
+                            .font(.caption2.monospaced())
+                    }
+                    .foregroundStyle(theme.secondaryText)
+                }
+
+                Spacer(minLength: 8)
+
+                Text("\(device.displayRSSI) dBm")
+                    .font(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(signalColor)
+
+                Text(elapsedText(now: context.date))
+                    .font(.caption.monospacedDigit().weight(.bold))
+                    .foregroundStyle(theme.primaryText)
+                    .frame(minWidth: 52)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .background(theme.softFill, in: Capsule())
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(theme.cardStroke)
+            }
+        }
+    }
+
+    private var signalColor: Color {
+        if device.displayRSSI > -55 { return .green }
+        if device.displayRSSI > -75 { return .orange }
+        return theme.secondaryText
+    }
+
+    private func elapsedText(now: Date) -> String {
+        let seconds = max(0, Int(now.timeIntervalSince(device.firstSeen)))
+        if seconds < 3_600 {
+            return String(format: "%02d:%02d", seconds / 60, seconds % 60)
+        }
+
+        return String(format: "%d:%02d", seconds / 3_600, (seconds % 3_600) / 60)
     }
 }
 
