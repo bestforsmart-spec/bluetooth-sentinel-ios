@@ -68,9 +68,9 @@ struct ContentView: View {
                     Text(monitor.isScanning ? "Сканирование активно" : "Сканирование остановлено")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text(monitor.fieldModeEnabled ? "Полевой режим: максимум дальности" : "Обычный режим")
+                    Text(monitor.maximumSensitivityEnabled ? "Максимальная чувствительность" : (monitor.fieldModeEnabled ? "Полевой режим: максимум дальности" : "Обычный режим"))
                         .font(.caption.bold())
-                        .foregroundStyle(monitor.fieldModeEnabled ? .red : .secondary)
+                        .foregroundStyle(monitor.maximumSensitivityEnabled ? .orange : (monitor.fieldModeEnabled ? .red : .secondary))
                 }
 
                 Spacer()
@@ -102,6 +102,10 @@ struct ContentView: View {
 
             Toggle(isOn: $monitor.fieldModeEnabled) {
                 Label("Полевой режим", systemImage: "shield.lefthalf.filled")
+            }
+
+            Toggle(isOn: $monitor.maximumSensitivityEnabled) {
+                Label("Максимальная чувствительность", systemImage: "antenna.radiowaves.left.and.right")
             }
 
             Toggle(isOn: $monitor.vibrationOnlyEnabled) {

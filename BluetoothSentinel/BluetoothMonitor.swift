@@ -219,6 +219,7 @@ enum DeviceKind: Equatable {
 final class BluetoothMonitor: NSObject, ObservableObject {
     private static let autoRememberInterval: TimeInterval = 10
     private static let fieldScanRefreshInterval: TimeInterval = 25
+    private static let maximumSensitivityScanRefreshInterval: TimeInterval = 10
     private static let staleDeviceInterval: TimeInterval = 60
     private static let staleCleanupInterval: TimeInterval = 5
     private static let approachMinimumObservationAge: TimeInterval = 12
@@ -231,6 +232,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let initialBaselineDuration: TimeInterval = 60
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
+    private static let maximumSensitivityEnabledKey = "maximumSensitivityEnabled"
     private static let vibrationOnlyEnabledKey = "vibrationOnlyEnabled"
     private static let knownDevicesKey = "knownObservedBluetoothDeviceIDs"
     private static let initialBaselineCompletedKey = "initialBaselineCompleted"
@@ -259,6 +261,16 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 persistDeviceLists()
                 refreshTrustStates()
                 startScanning()
+            }
+        }
+    }
+    @Published var maximumSensitivityEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(maximumSensitivityEnabled, forKey: Self.maximumSensitivityEnabledKey)
+            applyMaximumSensitivityPowerMode()
+            startScanRefreshTimer()
+            if scanningRequested, bluetoothState == .poweredOn {
+                refreshFieldScanIfNeeded()
             }
         }
     }
@@ -304,6 +316,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         self.quietDeviceIDs = Set(storedQuietIDs).subtracting(storedTrustedIDs)
         self.alertsEnabled = UserDefaults.standard.object(forKey: Self.alertsEnabledKey) as? Bool ?? true
         self.fieldModeEnabled = UserDefaults.standard.object(forKey: Self.fieldModeEnabledKey) as? Bool ?? true
+        self.maximumSensitivityEnabled = UserDefaults.standard.object(forKey: Self.maximumSensitivityEnabledKey) as? Bool ?? false
         self.vibrationOnlyEnabled = UserDefaults.standard.object(forKey: Self.vibrationOnlyEnabledKey) as? Bool ?? false
         self.initialBaselineCompleted = UserDefaults.standard.object(forKey: Self.initialBaselineCompletedKey) as? Bool ?? false
         super.init()
@@ -321,6 +334,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         startAutoRememberTimer()
         startScanRefreshTimer()
         startStaleCleanupTimer()
+        applyMaximumSensitivityPowerMode()
     }
 
     deinit {
@@ -328,6 +342,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         scanRefreshTimer?.invalidate()
         staleCleanupTimer?.invalidate()
         initialBaselineTimer?.invalidate()
+        UIApplication.shared.isIdleTimerDisabled = false
     }
 
     var trustedDeviceCount: Int {
@@ -363,12 +378,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         isScanning = true
+        applyMaximumSensitivityPowerMode()
     }
 
     func stopScanning() {
         scanningRequested = false
         centralManager?.stopScan()
         isScanning = false
+        applyMaximumSensitivityPowerMode()
     }
 
     func toggleScanning() {
@@ -424,12 +441,14 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         if scanningRequested, bluetoothState == .poweredOn {
             startScanning()
         }
+        applyMaximumSensitivityPowerMode()
     }
 
     func handleAppDidEnterBackground() {
         if scanningRequested, bluetoothState == .poweredOn {
             startScanning()
         }
+        applyMaximumSensitivityPowerMode()
     }
 
     private func persistDeviceLists() {
@@ -525,7 +544,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     private func startScanRefreshTimer() {
         scanRefreshTimer?.invalidate()
-        scanRefreshTimer = Timer.scheduledTimer(withTimeInterval: Self.fieldScanRefreshInterval, repeats: true) { [weak self] _ in
+        scanRefreshTimer = Timer.scheduledTimer(withTimeInterval: scanRefreshInterval, repeats: true) { [weak self] _ in
             self?.refreshFieldScanIfNeeded()
         }
     }
@@ -538,13 +557,22 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     private func refreshFieldScanIfNeeded() {
-        guard fieldModeEnabled, scanningRequested, bluetoothState == .poweredOn else { return }
+        guard (fieldModeEnabled || maximumSensitivityEnabled), scanningRequested, bluetoothState == .poweredOn else { return }
         centralManager?.stopScan()
         centralManager?.scanForPeripherals(
             withServices: nil,
             options: [CBCentralManagerScanOptionAllowDuplicatesKey: true]
         )
         isScanning = true
+        applyMaximumSensitivityPowerMode()
+    }
+
+    private var scanRefreshInterval: TimeInterval {
+        maximumSensitivityEnabled ? Self.maximumSensitivityScanRefreshInterval : Self.fieldScanRefreshInterval
+    }
+
+    private func applyMaximumSensitivityPowerMode() {
+        UIApplication.shared.isIdleTimerDisabled = maximumSensitivityEnabled && scanningRequested && bluetoothState == .poweredOn
     }
 
     private func seedApproachReferenceIfNeeded(for device: DetectedDevice) {
@@ -722,6 +750,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             startScanning()
         } else {
             isScanning = false
+            applyMaximumSensitivityPowerMode()
         }
     }
 
