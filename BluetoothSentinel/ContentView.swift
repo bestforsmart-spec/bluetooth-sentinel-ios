@@ -694,7 +694,7 @@ struct DeviceDetailSheet: View {
                 }
 
                 HStack(spacing: 8) {
-                    DetailMetric(title: "RSSI 5с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
+                    DetailMetric(title: "RSSI 8с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
                     DetailMetric(title: "Дистанция", value: device.displayDistanceText, unit: "", color: distanceColor, theme: theme)
                     DetailMetric(title: "Курс", value: device.directionShortName, unit: device.directionConfidenceText, color: directionColor, theme: theme)
                 }
@@ -869,23 +869,23 @@ struct SignalPowerScale: View {
     let theme: SentinelTheme
 
     var body: some View {
-        ZStack(alignment: .leading) {
-            Capsule()
-                .fill(theme.softFill)
-
-            Capsule()
-                .fill(color.opacity(0.82))
-                .frame(width: 46 * signalLevel)
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(0..<10, id: \.self) { index in
+                Capsule()
+                    .fill(index < activeStepCount ? color.opacity(0.86) : theme.secondaryText.opacity(0.16))
+                    .frame(width: 3, height: CGFloat(5 + index))
+            }
         }
-        .frame(width: 46, height: 8)
+        .frame(width: 46, height: 16)
         .padding(.horizontal, 6)
-        .padding(.vertical, 8)
+        .padding(.vertical, 4)
         .background(theme.softFill.opacity(0.75), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    private var signalLevel: CGFloat {
+    private var activeStepCount: Int {
         let clamped = min(max(Double(rssi), -100), -35)
-        return CGFloat((clamped + 100) / 65)
+        let normalized = (clamped + 100) / 65
+        return min(max(Int((normalized * 10).rounded(.up)), 1), 10)
     }
 }
 

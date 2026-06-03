@@ -139,6 +139,8 @@ struct DetectedDevice: Identifiable, Equatable {
     var deviceKind: DeviceKind
     var rssi: Int
     var smoothedRSSI: Double
+    var displayFilteredRSSI: Double
+    var lastDisplayRSSIUpdateAt: Date
     var strongestHeadingDegrees: Double?
     var strongestHeadingRSSI: Double?
     var directionSectorRSSIs: [Double?]
@@ -160,18 +162,11 @@ struct DetectedDevice: Identifiable, Equatable {
     }
 
     var displayRSSI: Int {
-        Int(displayRSSIDouble.rounded())
+        Int(displayFilteredRSSI.rounded())
     }
 
     var displayRSSIDouble: Double {
-        let now = lastSeen
-        let samples = signalSamples.filter { now.timeIntervalSince($0.timestamp) <= 5 }
-        guard !samples.isEmpty else { return smoothedRSSI }
-
-        let total = samples.reduce(0.0) { partial, sample in
-            partial + Double(sample.rssi)
-        }
-        return total / Double(samples.count)
+        displayFilteredRSSI
     }
 
     var displayDistanceMeters: Double? {
@@ -305,6 +300,41 @@ struct DetectedDevice: Identifiable, Equatable {
         if signalSamples.count > limit {
             signalSamples.removeFirst(signalSamples.count - limit)
         }
+    }
+
+    mutating func updateDisplayRSSI(now: Date, window: TimeInterval, deadband: Double, minimumInterval: TimeInterval) {
+        guard now.timeIntervalSince(lastDisplayRSSIUpdateAt) >= minimumInterval else { return }
+
+        let windowSamples = signalSamples
+            .filter { now.timeIntervalSince($0.timestamp) <= window }
+            .map { Double($0.rssi) }
+        let candidate = Self.trimmedMedian(windowSamples) ?? smoothedRSSI
+        let delta = candidate - displayFilteredRSSI
+
+        if abs(delta) >= deadband {
+            displayFilteredRSSI = candidate
+        }
+        lastDisplayRSSIUpdateAt = now
+    }
+
+    private static func trimmedMedian(_ values: [Double]) -> Double? {
+        guard !values.isEmpty else { return nil }
+
+        var sorted = values.sorted()
+        if sorted.count >= 5 {
+            let trimCount = max(1, Int((Double(sorted.count) * 0.18).rounded(.down)))
+            if sorted.count > trimCount * 2 {
+                sorted.removeFirst(trimCount)
+                sorted.removeLast(trimCount)
+            }
+        }
+
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+
+        return sorted[middle]
     }
 }
 
@@ -462,13 +492,17 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let approachRequiredEvidenceCount = 3
     private static let approachEvidenceMinimumSpacing: TimeInterval = 1.5
     private static let approachEvidenceResetInterval: TimeInterval = 10
-    private static let approachTrendSampleCount = 6
-    fileprivate static let approachTrendMinimumSpan: TimeInterval = 6
-    fileprivate static let approachTrendMinimumGain = 4.0
+    private static let approachTrendMinimumSampleCount = 10
+    fileprivate static let approachTrendMinimumSpan: TimeInterval = 12
+    fileprivate static let approachTrendMinimumGain = 8.0
     fileprivate static let approachMaximumJitter = 12.0
     fileprivate static let approachStrongGainOverride = 18.0
     private static let signalSampleLimit = 30
     private static let signalSampleMinimumSpacing: TimeInterval = 1
+    private static let displayRSSIWindow: TimeInterval = 8
+    private static let displayRSSIDeadband = 3.0
+    private static let displayRSSIMinimumUpdateInterval: TimeInterval = 1
+    private static let deviceListPublishMinimumInterval: TimeInterval = 1
     private static let signalEventLimit = 50
     private static let blackBoxEventLimit = 200
     private static let signalEventRSSIThreshold = 8
@@ -558,6 +592,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var approachLastEvidenceAtByID: [String: Date] = [:]
     private var signalEventReferenceRSSIByID: [String: Int] = [:]
     private var signalEventLastAtByID: [String: Date] = [:]
+    private var lastDeviceListPublishedAt: Date?
+    private var latestPacketAt: Date?
+    private var lastPacketStatsPublishedAt: Date?
+    private var totalPacketCount = 0
     private var autoRememberTimer: Timer?
     private var scanRefreshTimer: Timer?
     private var staleCleanupTimer: Timer?
@@ -697,7 +735,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     var selfTestChecks: [InstrumentCheck] {
         let now = Date()
-        let packetAge = lastPacketAt.map { now.timeIntervalSince($0) }
+        let packetAge = latestPacketAt.map { now.timeIntervalSince($0) }
         let dataIsFresh = packetAge.map { $0 <= Self.packetFreshInterval } ?? false
         let appIsActive = UIApplication.shared.applicationState == .active
         let isLowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
@@ -867,7 +905,11 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         signalEvents.removeAll()
         blackBoxEvents.removeAll()
         lastPacketAt = nil
+        latestPacketAt = nil
+        lastPacketStatsPublishedAt = nil
+        lastDeviceListPublishedAt = nil
         packetCount = 0
+        totalPacketCount = 0
     }
 
     func testAlert() {
@@ -928,7 +970,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         for id in devicesByID.keys {
             devicesByID[id]?.trustState = trustState(for: id)
         }
-        publishDeviceList()
+        publishDeviceList(force: true)
     }
 
     private func trustState(for id: String) -> DeviceTrustState {
@@ -947,13 +989,35 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         return .unknown
     }
 
-    private func publishDeviceList() {
+    private func publishDeviceList(force: Bool = false, now: Date = Date()) {
+        if !force,
+           let lastDeviceListPublishedAt,
+           now.timeIntervalSince(lastDeviceListPublishedAt) < Self.deviceListPublishMinimumInterval {
+            return
+        }
+
         devices = deviceOrder.compactMap { devicesByID[$0] }
+        lastDeviceListPublishedAt = now
     }
 
     private func rememberKnownDevice(_ id: String) {
         guard knownDeviceIDs.insert(id).inserted else { return }
         persistDeviceLists()
+    }
+
+    private func recordPacket(now: Date) {
+        latestPacketAt = now
+        totalPacketCount += 1
+
+        guard lastPacketStatsPublishedAt == nil
+            || now.timeIntervalSince(lastPacketStatsPublishedAt ?? .distantPast) >= Self.deviceListPublishMinimumInterval
+        else {
+            return
+        }
+
+        lastPacketAt = now
+        packetCount = totalPacketCount
+        lastPacketStatsPublishedAt = now
     }
 
     private func beginInitialBaselineIfNeeded(now: Date = Date()) {
@@ -1134,8 +1198,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     private func analyzeApproachSignal(for device: DetectedDevice, referenceRSSI: Double) -> ApproachSignalAnalysis {
-        let samples = Array(device.signalSamples.suffix(Self.approachTrendSampleCount))
-        guard samples.count >= Self.approachTrendSampleCount,
+        let now = device.lastSeen
+        let samples = device.signalSamples.filter { now.timeIntervalSince($0.timestamp) <= Self.approachTrendMinimumSpan }
+        guard samples.count >= Self.approachTrendMinimumSampleCount,
               let first = samples.first,
               let last = samples.last else {
             return ApproachSignalAnalysis(
@@ -1148,8 +1213,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             )
         }
 
-        let recentMedian = median(samples.suffix(3).map(\.smoothedRSSI))
-        let earlierMedian = median(samples.prefix(3).map(\.smoothedRSSI))
+        let midpoint = samples.count / 2
+        let earlierMedian = trimmedMedian(Array(samples.prefix(midpoint)).map(\.smoothedRSSI))
+        let recentMedian = trimmedMedian(Array(samples.suffix(samples.count - midpoint)).map(\.smoothedRSSI))
         let rawRSSIs = samples.map(\.rssi)
         let jitter = Double((rawRSSIs.max() ?? device.rssi) - (rawRSSIs.min() ?? device.rssi))
         let risingSteps = zip(samples.dropLast(), samples.dropFirst()).filter { previous, next in
@@ -1167,9 +1233,21 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     }
 
     private func median(_ values: [Double]) -> Double {
+        trimmedMedian(values)
+    }
+
+    private func trimmedMedian(_ values: [Double]) -> Double {
         guard !values.isEmpty else { return 0 }
 
-        let sorted = values.sorted()
+        var sorted = values.sorted()
+        if sorted.count >= 5 {
+            let trimCount = max(1, Int((Double(sorted.count) * 0.18).rounded(.down)))
+            if sorted.count > trimCount * 2 {
+                sorted.removeFirst(trimCount)
+                sorted.removeLast(trimCount)
+            }
+        }
+
         let middle = sorted.count / 2
         if sorted.count.isMultiple(of: 2) {
             return (sorted[middle - 1] + sorted[middle]) / 2
@@ -1250,7 +1328,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         guard changed else { return }
 
         persistDeviceLists()
-        publishDeviceList()
+        publishDeviceList(force: true)
     }
 
     private func removeStaleDevices(now: Date = Date()) {
@@ -1280,7 +1358,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
         let staleIDSet = Set(staleIDs)
         deviceOrder.removeAll { staleIDSet.contains($0) }
-        publishDeviceList()
+        publishDeviceList(force: true, now: now)
     }
 
     private func startHeadingUpdatesIfPossible() {
@@ -1360,8 +1438,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
     ) {
         let id = peripheral.identifier.uuidString
         let now = Date()
-        lastPacketAt = now
-        packetCount += 1
+        recordPacket(now: now)
         let name = peripheral.name
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Без имени"
@@ -1389,6 +1466,12 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 limit: Self.signalSampleLimit,
                 minimumSpacing: Self.signalSampleMinimumSpacing
             )
+            existing.updateDisplayRSSI(
+                now: now,
+                window: Self.displayRSSIWindow,
+                deadband: Self.displayRSSIDeadband,
+                minimumInterval: Self.displayRSSIMinimumUpdateInterval
+            )
             updateDirectionEstimate(for: &existing)
             existing.lastSeen = now
             existing.advertisement = summary
@@ -1414,6 +1497,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                     now: now
                 )
                 handleApproachAlert(existing, now: now)
+                publishDeviceList(force: true, now: now)
             }
         } else {
             let latestRSSI = RSSI.intValue
@@ -1423,6 +1507,8 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 deviceKind: deviceKind,
                 rssi: latestRSSI,
                 smoothedRSSI: Double(latestRSSI),
+                displayFilteredRSSI: Double(latestRSSI),
+                lastDisplayRSSIUpdateAt: now,
                 strongestHeadingDegrees: nil,
                 strongestHeadingRSSI: nil,
                 directionSectorRSSIs: Array(repeating: nil, count: Self.directionSectorCount),
@@ -1451,9 +1537,10 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 level: .nominal,
                 now: now
             )
+            publishDeviceList(force: true, now: now)
         }
 
-        publishDeviceList()
+        publishDeviceList(now: now)
     }
 
     func centralManager(_ central: CBCentralManager, willRestoreState dict: [String: Any]) {
