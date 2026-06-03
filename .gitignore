@@ -1,6 +1,8 @@
 DerivedData/
 build/
+packages/
 **/.gradle/
+**/.build/
 **/local.properties
 *.xcuserstate
 *.xccheckout

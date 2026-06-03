@@ -39,3 +39,7 @@ RSSI не является точной дистанцией. Тело, рель
 ## Android APK
 
 Android-версия лежит в папке `android/`. Инструкция по установке APK: `android/README.md`.
+
+## MacBook
+
+macOS-версия лежит в папке `macos/`. Инструкция по сборке и запуску: `macos/README.md`.
