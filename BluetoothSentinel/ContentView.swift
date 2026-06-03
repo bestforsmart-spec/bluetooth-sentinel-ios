@@ -694,7 +694,7 @@ struct DeviceDetailSheet: View {
                 }
 
                 HStack(spacing: 8) {
-                    DetailMetric(title: "RSSI 3с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
+                    DetailMetric(title: "RSSI 5с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
                     DetailMetric(title: "Дистанция", value: device.displayDistanceText, unit: "", color: distanceColor, theme: theme)
                     DetailMetric(title: "Курс", value: device.directionShortName, unit: device.directionConfidenceText, color: directionColor, theme: theme)
                 }
@@ -848,7 +848,7 @@ struct SignalHistoryStrip: View {
                 Capsule()
                     .fill(color.opacity(0.80))
                     .frame(maxWidth: .infinity)
-                    .frame(height: barHeight(for: sample.rssi))
+                    .frame(height: barHeight(for: sample.smoothedRSSI))
             }
         }
         .frame(height: 54)
@@ -856,8 +856,8 @@ struct SignalHistoryStrip: View {
         .background(theme.softFill, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
-    private func barHeight(for rssi: Int) -> CGFloat {
-        let clamped = min(max(Double(rssi), -100), -35)
+    private func barHeight(for rssi: Double) -> CGFloat {
+        let clamped = min(max(rssi, -100), -35)
         let normalized = (clamped + 100) / 65
         return CGFloat(8 + (normalized * 42))
     }

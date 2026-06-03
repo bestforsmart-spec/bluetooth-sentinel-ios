@@ -165,7 +165,7 @@ struct DetectedDevice: Identifiable, Equatable {
 
     var displayRSSIDouble: Double {
         let now = lastSeen
-        let samples = signalSamples.filter { now.timeIntervalSince($0.timestamp) <= 3 }
+        let samples = signalSamples.filter { now.timeIntervalSince($0.timestamp) <= 5 }
         guard !samples.isEmpty else { return smoothedRSSI }
 
         let total = samples.reduce(0.0) { partial, sample in
