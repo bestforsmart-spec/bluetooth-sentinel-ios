@@ -542,6 +542,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var sessionNewDeviceIDs: Set<String> = []
+    private var unnamedNewDeviceLabelsByID: [String: String] = [:]
+    private var nextUnnamedNewDeviceNumber = 1
     private var discoveryAlertedDeviceIDs: Set<String> = []
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
@@ -845,6 +847,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devicesByID.removeAll()
         deviceOrder.removeAll()
         sessionNewDeviceIDs.removeAll()
+        unnamedNewDeviceLabelsByID.removeAll()
+        nextUnnamedNewDeviceNumber = 1
         discoveryAlertedDeviceIDs.removeAll()
         devices.removeAll()
         approachAlertedDeviceIDs.removeAll()
@@ -874,6 +878,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         initialBaselineStartedAt = nil
         UserDefaults.standard.set(false, forKey: Self.initialBaselineCompletedKey)
         initialBaselineTimer?.invalidate()
+        unnamedNewDeviceLabelsByID.removeAll()
+        nextUnnamedNewDeviceNumber = 1
         discoveryAlertedDeviceIDs.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
@@ -940,6 +946,30 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
 
         return .unknown
+    }
+
+    private func displayName(for id: String, rawName: String, trustState: DeviceTrustState) -> String {
+        guard isUnidentifiedName(rawName) else {
+            return rawName
+        }
+
+        if let existingLabel = unnamedNewDeviceLabelsByID[id] {
+            return existingLabel
+        }
+
+        guard trustState == .unknown else {
+            return rawName
+        }
+
+        let label = "Новый \(nextUnnamedNewDeviceNumber)"
+        nextUnnamedNewDeviceNumber += 1
+        unnamedNewDeviceLabelsByID[id] = label
+        return label
+    }
+
+    private func isUnidentifiedName(_ name: String) -> Bool {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmedName.isEmpty || trimmedName == "Без имени"
     }
 
     private func publishDeviceList(force: Bool = false, now: Date = Date()) {
@@ -1380,11 +1410,11 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         let id = peripheral.identifier.uuidString
         let now = Date()
         recordPacket(now: now)
-        let name = peripheral.name
+        let rawName = peripheral.name
             ?? advertisementData[CBAdvertisementDataLocalNameKey] as? String
             ?? "Без имени"
         let summary = AdvertisementFormatter.summary(from: advertisementData)
-        let deviceKind = DeviceKindClassifier.classify(name: name, advertisementData: advertisementData)
+        let deviceKind = DeviceKindClassifier.classify(name: rawName, advertisementData: advertisementData)
         beginInitialBaselineIfNeeded(now: now)
         let wasUnknown = trustState(for: id) == .unknown
         let shouldAnnounceDiscovery = wasUnknown && initialBaselineCompleted
@@ -1397,7 +1427,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
             let previousRSSI = existing.rssi
-            existing.name = name
+            existing.name = displayName(for: id, rawName: rawName, trustState: currentTrustState)
             existing.deviceKind = deviceKind
             existing.rssi = latestRSSI
             existing.smoothedRSSI = (existing.smoothedRSSI * 0.72) + (Double(latestRSSI) * 0.28)
@@ -1437,7 +1467,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             let latestRSSI = RSSI.intValue
             let newDevice = DetectedDevice(
                 id: id,
-                name: name,
+                name: displayName(for: id, rawName: rawName, trustState: currentTrustState),
                 deviceKind: deviceKind,
                 rssi: latestRSSI,
                 smoothedRSSI: Double(latestRSSI),
