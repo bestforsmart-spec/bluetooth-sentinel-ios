@@ -3,14 +3,18 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    @Environment(\.colorScheme) private var colorScheme
     @EnvironmentObject private var monitor: BluetoothMonitor
+    @AppStorage("darkThemeEnabled") private var darkThemeEnabled = false
     @State private var isAnalysisSheetPresented = false
     @State private var isInstrumentSheetPresented = false
     @State private var selectedDevice: DetectedDevice?
 
     private var theme: SentinelTheme {
-        SentinelTheme(colorScheme: colorScheme)
+        SentinelTheme(colorScheme: activeColorScheme)
+    }
+
+    private var activeColorScheme: ColorScheme {
+        darkThemeEnabled ? .dark : .light
     }
 
     var body: some View {
@@ -18,12 +22,12 @@ struct ContentView: View {
             ScrollView {
                 VStack(spacing: 14) {
                     statusPanel
-                    controlPanel
                     devicesPanel
                 }
                 .padding(16)
             }
             .background(theme.background.ignoresSafeArea())
+            .preferredColorScheme(activeColorScheme)
             .navigationTitle("BT Sentinel")
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(theme.background, for: .navigationBar)
@@ -66,7 +70,7 @@ struct ContentView: View {
                             .minimumScaleFactor(0.82)
                     }
 
-                    Text("\(monitor.bluetoothState.title) · \(monitor.instrumentStatus.title)")
+                    Text(monitor.bluetoothState.title)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(theme.secondaryText)
                 }
@@ -75,16 +79,28 @@ struct ContentView: View {
 
                 HStack(alignment: .top, spacing: 10) {
                     Button {
-                        isInstrumentSheetPresented = true
+                        monitor.vibrationOnlyEnabled.toggle()
                     } label: {
-                        Image(systemName: "gauge.with.dots.needle.33percent")
+                        Image(systemName: monitor.vibrationOnlyEnabled ? "speaker.slash.fill" : "speaker.wave.2.fill")
                             .font(.subheadline.weight(.bold))
-                            .foregroundStyle(theme.healthColor(monitor.instrumentStatus.level))
+                            .foregroundStyle(monitor.vibrationOnlyEnabled ? .orange : theme.primaryText)
                             .frame(width: 34, height: 34)
                             .background(theme.softFill, in: Circle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("Открыть прибор")
+                    .accessibilityLabel(monitor.vibrationOnlyEnabled ? "Выключить беззвучный режим" : "Включить беззвучный режим")
+
+                    Button {
+                        darkThemeEnabled.toggle()
+                    } label: {
+                        Image(systemName: darkThemeEnabled ? "moon.fill" : "sun.max.fill")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(darkThemeEnabled ? .blue : .orange)
+                            .frame(width: 34, height: 34)
+                            .background(theme.softFill, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(darkThemeEnabled ? "Включить светлую тему" : "Включить тёмную тему")
 
                     VStack(alignment: .trailing, spacing: 0) {
                         Text("\(monitor.devices.count)")
@@ -100,7 +116,7 @@ struct ContentView: View {
             RadarActivityBar(level: airActivityLevel, accent: statusColor, theme: theme)
 
             HStack(spacing: 8) {
-                CompactMetric(title: "Сближение", value: "\(monitor.approachingDeviceCount)", color: .red, theme: theme)
+                CompactMetric(title: "Новые", value: "\(monitor.newDeviceCount)", color: .green, theme: theme)
                 Button {
                     isAnalysisSheetPresented = true
                 } label: {
@@ -108,52 +124,6 @@ struct ContentView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Показать анализ")
-                Button {
-                    isInstrumentSheetPresented = true
-                } label: {
-                    CompactMetric(title: "Надёжность", value: healthShortText, color: theme.healthColor(monitor.instrumentStatus.level), theme: theme)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Показать состояние прибора")
-            }
-        }
-        .padding(14)
-        .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(theme.cardStroke)
-        }
-    }
-
-    private var controlPanel: some View {
-        VStack(spacing: 10) {
-            Toggle(isOn: $monitor.vibrationOnlyEnabled) {
-                Label("Беззвучный режим", systemImage: monitor.vibrationOnlyEnabled ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(theme.primaryText)
-            }
-            .tint(.orange)
-
-            HStack(spacing: 8) {
-                Button {
-                    monitor.trustAllVisibleDevices()
-                } label: {
-                    Label("Доверять", systemImage: "checkmark.shield.fill")
-                        .font(.caption.weight(.semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(monitor.devices.isEmpty)
-
-                Button(role: .destructive) {
-                    monitor.resetTrustedDevices()
-                } label: {
-                    Label("Сброс доверия", systemImage: "xmark.shield.fill")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
         }
         .padding(14)
@@ -201,25 +171,13 @@ struct ContentView: View {
     }
 
     private var statusColor: Color {
-        theme.threatColor(monitor.threatLevel)
+        monitor.isScanning ? .green : theme.secondaryText
     }
 
     private var operationStateText: String {
-        if monitor.threatLevel != .normal { return monitor.threatLevel.title }
         if monitor.isInitialBaselineActive { return "Тихий старт" }
-        if monitor.isScanning { return "Эфир стабилен" }
+        if monitor.isScanning { return "Сканирование активно" }
         return "Скан остановлен"
-    }
-
-    private var healthShortText: String {
-        switch monitor.instrumentStatus.level {
-        case .nominal:
-            return "OK"
-        case .warning:
-            return "ВНИМ"
-        case .critical:
-            return "КРИТ"
-        }
     }
 
     private var airActivityLevel: CGFloat {
@@ -545,25 +503,6 @@ struct InstrumentSheetView: View {
                         }
                     }
 
-                    HStack(spacing: 8) {
-                        Button {
-                            monitor.restartFieldBaseline()
-                        } label: {
-                            Label("Развернуть пост", systemImage: "scope")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-
-                        Button {
-                            monitor.testAlert()
-                        } label: {
-                            Label("Сигнал", systemImage: "speaker.wave.2.fill")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
-                    }
                 }
                 .padding(14)
                 .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))

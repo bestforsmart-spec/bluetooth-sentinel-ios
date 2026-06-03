@@ -524,6 +524,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var trustedDeviceIDs: Set<String>
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
+    private var sessionNewDeviceIDs: Set<String> = []
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
     private var approachReferenceRSSIByID: [String: Double] = [:]
@@ -589,6 +590,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
 
     var knownDeviceCount: Int {
         knownDeviceIDs.count
+    }
+
+    var newDeviceCount: Int {
+        sessionNewDeviceIDs.count
     }
 
     var approachingDeviceCount: Int {
@@ -824,6 +829,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     func clearSession() {
         devicesByID.removeAll()
         deviceOrder.removeAll()
+        sessionNewDeviceIDs.removeAll()
         devices.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
@@ -1406,6 +1412,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 ]
             )
             devicesByID[id] = newDevice
+            sessionNewDeviceIDs.insert(id)
             deviceOrder.removeAll { $0 == id }
             deviceOrder.insert(id, at: 0)
             seedApproachReferenceIfNeeded(for: newDevice)
