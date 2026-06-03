@@ -1539,7 +1539,7 @@ final class BluetoothAlertNotificationCenter {
         content.body = "\(device.name): сигнал усилился, \(device.estimatedDistanceText)"
         content.categoryIdentifier = "bluetooth-device-alert"
         if !vibrationOnly {
-            content.sound = .default
+            content.sound = UNNotificationSound(named: UNNotificationSoundName("ApproachAlert.wav"))
         }
 
         let request = UNNotificationRequest(

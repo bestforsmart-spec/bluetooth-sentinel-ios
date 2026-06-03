@@ -20,12 +20,14 @@ final class AlertSoundPlayer: NSObject, AVAudioPlayerDelegate {
         configureAudioSession()
 
         Task { @MainActor in
-            playTone(frequency: 880, duration: 0.22, volume: 1.0)
+            playTone(frequency: 620, duration: 0.095, volume: 1.0)
             AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
-            try? await Task.sleep(nanoseconds: 260_000_000)
-            playTone(frequency: 1_240, duration: 0.22, volume: 1.0)
-            try? await Task.sleep(nanoseconds: 260_000_000)
-            playTone(frequency: 1_560, duration: 0.34, volume: 1.0)
+            try? await Task.sleep(nanoseconds: 170_000_000)
+            playTone(frequency: 620, duration: 0.095, volume: 1.0)
+            try? await Task.sleep(nanoseconds: 170_000_000)
+            playTone(frequency: 620, duration: 0.095, volume: 1.0)
+            try? await Task.sleep(nanoseconds: 210_000_000)
+            playTone(frequency: 980, duration: 0.28, volume: 1.0)
             AudioServicesPlayAlertSound(kSystemSoundID_Vibrate)
         }
     }
