@@ -541,6 +541,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var sessionNewDeviceIDs: Set<String> = []
+    private var discoveryAlertedDeviceIDs: Set<String> = []
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
     private var approachReferenceRSSIByID: [String: Double] = [:]
@@ -839,6 +840,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devicesByID.removeAll()
         deviceOrder.removeAll()
         sessionNewDeviceIDs.removeAll()
+        discoveryAlertedDeviceIDs.removeAll()
         devices.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
@@ -867,6 +869,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         initialBaselineStartedAt = nil
         UserDefaults.standard.set(false, forKey: Self.initialBaselineCompletedKey)
         initialBaselineTimer?.invalidate()
+        discoveryAlertedDeviceIDs.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
         approachReferenceRSSIByID.removeAll()
@@ -1000,6 +1003,32 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             if vibrationOnlyEnabled {
                 soundPlayer.playApproachVibration()
             }
+        }
+    }
+
+    private func handleDiscoveryAlert(_ device: DetectedDevice, now: Date = Date()) {
+        guard alertsEnabled, fieldModeEnabled, initialBaselineCompleted, !discoveryAlertedDeviceIDs.contains(device.id) else {
+            return
+        }
+
+        discoveryAlertedDeviceIDs.insert(device.id)
+        lastAlertAt = now
+
+        if UIApplication.shared.applicationState == .active {
+            playConfiguredDiscoveryAlert()
+        } else {
+            notificationCenter.postNewDeviceAlert(device, vibrationOnly: vibrationOnlyEnabled)
+            if vibrationOnlyEnabled {
+                soundPlayer.playVibration()
+            }
+        }
+    }
+
+    private func playConfiguredDiscoveryAlert() {
+        if vibrationOnlyEnabled {
+            soundPlayer.playVibration()
+        } else {
+            soundPlayer.playDiscoveryAlert()
         }
     }
 
@@ -1342,6 +1371,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         let deviceKind = DeviceKindClassifier.classify(name: name, advertisementData: advertisementData)
         beginInitialBaselineIfNeeded(now: now)
         let wasUnknown = trustState(for: id) == .unknown
+        let shouldAnnounceDiscovery = wasUnknown && initialBaselineCompleted
         var currentTrustState = trustState(for: id)
         if wasUnknown {
             rememberKnownDevice(id)
@@ -1428,6 +1458,9 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 level: .nominal,
                 now: now
             )
+            if shouldAnnounceDiscovery {
+                handleDiscoveryAlert(newDevice, now: now)
+            }
             publishDeviceList(force: true, now: now)
         }
 
@@ -1444,6 +1477,23 @@ final class BluetoothAlertNotificationCenter {
 
     func requestAuthorization() {
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    func postNewDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
+        let content = UNMutableNotificationContent()
+        content.title = "Новое Bluetooth-устройство"
+        content.body = "\(device.name): \(device.displayRSSI) dBm, \(device.displayDistanceText)"
+        content.categoryIdentifier = "bluetooth-device-discovery"
+        if !vibrationOnly {
+            content.sound = .default
+        }
+
+        let request = UNNotificationRequest(
+            identifier: "bluetooth-new-device-\(device.id)-\(Int(Date().timeIntervalSince1970))",
+            content: content,
+            trigger: nil
+        )
+        center.add(request)
     }
 
     func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
