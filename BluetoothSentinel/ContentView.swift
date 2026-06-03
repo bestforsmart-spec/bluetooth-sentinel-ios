@@ -18,34 +18,29 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: 14) {
-                    statusPanel
-                    devicesPanel
-                }
-                .padding(16)
+        ScrollView {
+            VStack(spacing: 14) {
+                statusPanel
+                devicesPanel
             }
-            .background(theme.background.ignoresSafeArea())
-            .preferredColorScheme(activeColorScheme)
-            .navigationTitle("BT Sentinel")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(theme.background, for: .navigationBar)
-            .sheet(isPresented: $isAnalysisSheetPresented) {
-                AnalysisSheetView(events: monitor.signalEvents, theme: theme)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
-            .sheet(isPresented: $isInstrumentSheetPresented) {
-                InstrumentSheetView(monitor: monitor, theme: theme)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
-            .sheet(item: $selectedDevice) { device in
-                DeviceDetailSheet(device: latestDevice(for: device), theme: theme, monitor: monitor)
-                    .presentationDetents([.medium, .large])
-                    .presentationDragIndicator(.visible)
-            }
+            .padding(16)
+        }
+        .background(theme.background.ignoresSafeArea())
+        .preferredColorScheme(activeColorScheme)
+        .sheet(isPresented: $isAnalysisSheetPresented) {
+            AnalysisSheetView(events: monitor.signalEvents, theme: theme)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isInstrumentSheetPresented) {
+            InstrumentSheetView(monitor: monitor, theme: theme)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $selectedDevice) { device in
+            DeviceDetailSheet(device: latestDevice(for: device), theme: theme, monitor: monitor)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
