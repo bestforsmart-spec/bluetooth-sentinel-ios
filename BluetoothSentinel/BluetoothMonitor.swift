@@ -11,6 +11,53 @@ enum DeviceTrustState: Equatable {
     case trusted
 }
 
+struct SignalSample: Equatable {
+    let timestamp: Date
+    let rssi: Int
+    let smoothedRSSI: Double
+}
+
+enum SignalEventKind: Equatable {
+    case neutral
+    case stronger
+    case weaker
+    case approaching
+}
+
+struct SignalEvent: Identifiable, Equatable {
+    let id = UUID()
+    let timestamp: Date
+    let deviceName: String
+    let detail: String
+    let kind: SignalEventKind
+}
+
+private struct ApproachSignalAnalysis {
+    let hasEnoughHistory: Bool
+    let rssiGain: Double
+    let trendGain: Double
+    let jitter: Double
+    let risingSteps: Int
+    let span: TimeInterval
+
+    var hasStableTrend: Bool {
+        hasEnoughHistory
+            && span >= BluetoothMonitor.approachTrendMinimumSpan
+            && trendGain >= BluetoothMonitor.approachTrendMinimumGain
+            && risingSteps >= 3
+    }
+
+    var isJitterControlled: Bool {
+        jitter <= BluetoothMonitor.approachMaximumJitter || rssiGain >= BluetoothMonitor.approachStrongGainOverride
+    }
+
+    var showsApproach: Bool {
+        hasStableTrend
+            && isJitterControlled
+            && rssiGain >= BluetoothMonitor.approachRSSIGainThreshold
+    }
+}
+
 struct DetectedDevice: Identifiable, Equatable {
     let id: String
     var name: String
@@ -25,6 +72,7 @@ struct DetectedDevice: Identifiable, Equatable {
     var trustState: DeviceTrustState
     var approachState: ApproachState
     var alertCount: Int
+    var signalSamples: [SignalSample]
 
     var isTrusted: Bool {
         trustState == .trusted
@@ -72,6 +120,68 @@ struct DetectedDevice: Identifiable, Equatable {
 
     var detectionZone: DetectionZone {
         DetectionZone.zone(forMeters: estimatedDistanceMeters)
+    }
+
+    var recentRSSIRangeText: String {
+        let samples = signalSamples.suffix(12)
+        guard let minimum = samples.map(\.rssi).min(),
+              let maximum = samples.map(\.rssi).max() else {
+            return "--"
+        }
+
+        return "\(minimum)...\(maximum)"
+    }
+
+    var signalTrendText: String {
+        guard signalSamples.count >= 4,
+              let first = signalSamples.suffix(8).first,
+              let last = signalSamples.last else {
+            return "наблюдение"
+        }
+
+        let gain = last.smoothedRSSI - first.smoothedRSSI
+        let jitter = recentRSSIJitter
+
+        if approachState == .approaching {
+            return "сближение"
+        }
+
+        if gain >= 7 {
+            return "усиливается"
+        }
+
+        if gain <= -7 {
+            return "слабеет"
+        }
+
+        if jitter >= 10 {
+            return "дрожит"
+        }
+
+        return "стабильно"
+    }
+
+    var recentRSSIJitter: Int {
+        let samples = signalSamples.suffix(12)
+        guard let minimum = samples.map(\.rssi).min(),
+              let maximum = samples.map(\.rssi).max() else {
+            return 0
+        }
+
+        return maximum - minimum
+    }
+
+    mutating func appendSignalSample(rssi: Int, smoothedRSSI: Double, now: Date, limit: Int, minimumSpacing: TimeInterval) {
+        if let lastSample = signalSamples.last,
+           now.timeIntervalSince(lastSample.timestamp) < minimumSpacing {
+            signalSamples[signalSamples.count - 1] = SignalSample(timestamp: now, rssi: rssi, smoothedRSSI: smoothedRSSI)
+            return
+        }
+
+        signalSamples.append(SignalSample(timestamp: now, rssi: rssi, smoothedRSSI: smoothedRSSI))
+        if signalSamples.count > limit {
+            signalSamples.removeFirst(signalSamples.count - limit)
+        }
     }
 }
 
@@ -223,12 +333,22 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let staleDeviceInterval: TimeInterval = 60
     private static let staleCleanupInterval: TimeInterval = 5
     private static let approachMinimumObservationAge: TimeInterval = 12
-    private static let approachRSSIGainThreshold = 12.0
+    fileprivate static let approachRSSIGainThreshold = 12.0
     private static let approachDistanceDropRatio = 0.50
     private static let approachMinimumDistanceDrop = 6.0
     private static let approachRequiredEvidenceCount = 3
     private static let approachEvidenceMinimumSpacing: TimeInterval = 1.5
     private static let approachEvidenceResetInterval: TimeInterval = 10
+    private static let approachTrendSampleCount = 6
+    fileprivate static let approachTrendMinimumSpan: TimeInterval = 6
+    fileprivate static let approachTrendMinimumGain = 4.0
+    fileprivate static let approachMaximumJitter = 12.0
+    fileprivate static let approachStrongGainOverride = 18.0
+    private static let signalSampleLimit = 30
+    private static let signalSampleMinimumSpacing: TimeInterval = 1
+    private static let signalEventLimit = 50
+    private static let signalEventRSSIThreshold = 8
+    private static let signalEventMinimumSpacing: TimeInterval = 8
     private static let initialBaselineDuration: TimeInterval = 60
     private static let alertsEnabledKey = "alertsEnabled"
     private static let fieldModeEnabledKey = "fieldModeEnabled"
@@ -240,6 +360,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published private(set) var authorization: CBManagerAuthorization = CBCentralManager.authorization
     @Published private(set) var bluetoothState: CBManagerState = .unknown
     @Published private(set) var devices: [DetectedDevice] = []
+    @Published private(set) var signalEvents: [SignalEvent] = []
     @Published private(set) var isScanning = false
     @Published private(set) var lastAlertAt: Date?
     @Published private(set) var headingDegrees: Double?
@@ -258,6 +379,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 approachReferenceRSSIByID.removeAll()
                 approachEvidenceCountByID.removeAll()
                 approachLastEvidenceAtByID.removeAll()
+                signalEventReferenceRSSIByID.removeAll()
+                signalEventLastAtByID.removeAll()
                 persistDeviceLists()
                 refreshTrustStates()
                 startScanning()
@@ -297,6 +420,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var approachReferenceRSSIByID: [String: Double] = [:]
     private var approachEvidenceCountByID: [String: Int] = [:]
     private var approachLastEvidenceAtByID: [String: Date] = [:]
+    private var signalEventReferenceRSSIByID: [String: Int] = [:]
+    private var signalEventLastAtByID: [String: Date] = [:]
     private var autoRememberTimer: Timer?
     private var scanRefreshTimer: Timer?
     private var staleCleanupTimer: Timer?
@@ -421,6 +546,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         approachReferenceRSSIByID.removeAll()
         approachEvidenceCountByID.removeAll()
         approachLastEvidenceAtByID.removeAll()
+        signalEventReferenceRSSIByID.removeAll()
+        signalEventLastAtByID.removeAll()
         persistDeviceLists()
         refreshTrustStates()
     }
@@ -434,6 +561,9 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         approachReferenceRSSIByID.removeAll()
         approachEvidenceCountByID.removeAll()
         approachLastEvidenceAtByID.removeAll()
+        signalEventReferenceRSSIByID.removeAll()
+        signalEventLastAtByID.removeAll()
+        signalEvents.removeAll()
     }
 
     func testAlert() {
@@ -611,6 +741,85 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         approachLastEvidenceAtByID.removeValue(forKey: deviceID)
     }
 
+    private func appendSignalEvent(deviceName: String, detail: String, kind: SignalEventKind, now: Date = Date()) {
+        signalEvents.insert(
+            SignalEvent(timestamp: now, deviceName: deviceName, detail: detail, kind: kind),
+            at: 0
+        )
+
+        if signalEvents.count > Self.signalEventLimit {
+            signalEvents.removeLast(signalEvents.count - Self.signalEventLimit)
+        }
+    }
+
+    private func recordSignalEventIfNeeded(for device: DetectedDevice, previousRSSI: Int, now: Date) {
+        let referenceRSSI = signalEventReferenceRSSIByID[device.id] ?? previousRSSI
+        let delta = device.rssi - referenceRSSI
+
+        guard abs(delta) >= Self.signalEventRSSIThreshold else { return }
+
+        if let lastEventAt = signalEventLastAtByID[device.id],
+           now.timeIntervalSince(lastEventAt) < Self.signalEventMinimumSpacing {
+            return
+        }
+
+        let kind: SignalEventKind = delta > 0 ? .stronger : .weaker
+        let sign = delta > 0 ? "+" : ""
+        appendSignalEvent(
+            deviceName: device.name,
+            detail: "\(sign)\(delta) dB · \(device.signalTrendText)",
+            kind: kind,
+            now: now
+        )
+        signalEventReferenceRSSIByID[device.id] = device.rssi
+        signalEventLastAtByID[device.id] = now
+    }
+
+    private func analyzeApproachSignal(for device: DetectedDevice, referenceRSSI: Double) -> ApproachSignalAnalysis {
+        let samples = Array(device.signalSamples.suffix(Self.approachTrendSampleCount))
+        guard samples.count >= Self.approachTrendSampleCount,
+              let first = samples.first,
+              let last = samples.last else {
+            return ApproachSignalAnalysis(
+                hasEnoughHistory: false,
+                rssiGain: device.smoothedRSSI - referenceRSSI,
+                trendGain: 0,
+                jitter: Double(device.recentRSSIJitter),
+                risingSteps: 0,
+                span: 0
+            )
+        }
+
+        let recentMedian = median(samples.suffix(3).map(\.smoothedRSSI))
+        let earlierMedian = median(samples.prefix(3).map(\.smoothedRSSI))
+        let rawRSSIs = samples.map(\.rssi)
+        let jitter = Double((rawRSSIs.max() ?? device.rssi) - (rawRSSIs.min() ?? device.rssi))
+        let risingSteps = zip(samples.dropLast(), samples.dropFirst()).filter { previous, next in
+            next.smoothedRSSI >= previous.smoothedRSSI - 1.0
+        }.count
+
+        return ApproachSignalAnalysis(
+            hasEnoughHistory: true,
+            rssiGain: recentMedian - referenceRSSI,
+            trendGain: recentMedian - earlierMedian,
+            jitter: jitter,
+            risingSteps: risingSteps,
+            span: last.timestamp.timeIntervalSince(first.timestamp)
+        )
+    }
+
+    private func median(_ values: [Double]) -> Double {
+        guard !values.isEmpty else { return 0 }
+
+        let sorted = values.sorted()
+        let middle = sorted.count / 2
+        if sorted.count.isMultiple(of: 2) {
+            return (sorted[middle - 1] + sorted[middle]) / 2
+        }
+
+        return sorted[middle]
+    }
+
     private func updateApproachState(for device: inout DetectedDevice, now: Date) -> Bool {
         guard fieldModeEnabled,
               initialBaselineCompleted,
@@ -626,16 +835,18 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         }
 
         let referenceRSSI = approachReferenceRSSIByID[device.id] ?? device.smoothedRSSI
-        let rssiGain = device.smoothedRSSI - referenceRSSI
+        let signalAnalysis = analyzeApproachSignal(for: device, referenceRSSI: referenceRSSI)
         var distanceShowsApproach = false
 
         if let referenceDistance = approachReferenceDistanceByID[device.id],
            let currentDistance = device.estimatedDistanceMeters {
             distanceShowsApproach = currentDistance <= referenceDistance * Self.approachDistanceDropRatio
                 && referenceDistance - currentDistance >= Self.approachMinimumDistanceDrop
+                && signalAnalysis.hasStableTrend
+                && signalAnalysis.isJitterControlled
         }
 
-        let signalShowsApproach = rssiGain >= Self.approachRSSIGainThreshold
+        let signalShowsApproach = signalAnalysis.showsApproach
         if (signalShowsApproach || distanceShowsApproach),
            recordApproachEvidence(for: device.id, now: now) {
             device.approachState = .approaching
@@ -697,6 +908,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             approachReferenceRSSIByID.removeValue(forKey: id)
             approachEvidenceCountByID.removeValue(forKey: id)
             approachLastEvidenceAtByID.removeValue(forKey: id)
+            signalEventReferenceRSSIByID.removeValue(forKey: id)
+            signalEventLastAtByID.removeValue(forKey: id)
         }
 
         let staleIDSet = Set(staleIDs)
@@ -780,10 +993,18 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
 
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
+            let previousRSSI = existing.rssi
             existing.name = name
             existing.deviceKind = deviceKind
             existing.rssi = latestRSSI
             existing.smoothedRSSI = (existing.smoothedRSSI * 0.72) + (Double(latestRSSI) * 0.28)
+            existing.appendSignalSample(
+                rssi: latestRSSI,
+                smoothedRSSI: existing.smoothedRSSI,
+                now: now,
+                limit: Self.signalSampleLimit,
+                minimumSpacing: Self.signalSampleMinimumSpacing
+            )
             updateDirectionEstimate(for: &existing)
             existing.lastSeen = now
             existing.advertisement = summary
@@ -795,30 +1016,39 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 existing.trustState = .known
                 persistDeviceLists()
             }
+            recordSignalEventIfNeeded(for: existing, previousRSSI: previousRSSI, now: now)
             let isApproaching = updateApproachState(for: &existing, now: now)
             devicesByID[id] = existing
             if isApproaching {
+                appendSignalEvent(deviceName: existing.name, detail: "подтверждённое сближение", kind: .approaching, now: now)
                 handleApproachAlert(existing, now: now)
             }
         } else {
+            let latestRSSI = RSSI.intValue
             let newDevice = DetectedDevice(
                 id: id,
                 name: name,
                 deviceKind: deviceKind,
-                rssi: RSSI.intValue,
-                smoothedRSSI: Double(RSSI.intValue),
+                rssi: latestRSSI,
+                smoothedRSSI: Double(latestRSSI),
                 strongestHeadingDegrees: headingDegrees,
-                strongestHeadingRSSI: headingDegrees == nil ? nil : Double(RSSI.intValue),
+                strongestHeadingRSSI: headingDegrees == nil ? nil : Double(latestRSSI),
                 firstSeen: now,
                 lastSeen: now,
                 advertisement: summary,
                 trustState: currentTrustState,
                 approachState: .watching,
-                alertCount: 0
+                alertCount: 0,
+                signalSamples: [
+                    SignalSample(timestamp: now, rssi: latestRSSI, smoothedRSSI: Double(latestRSSI))
+                ]
             )
             devicesByID[id] = newDevice
             deviceOrder.append(id)
             seedApproachReferenceIfNeeded(for: newDevice)
+            signalEventReferenceRSSIByID[id] = latestRSSI
+            signalEventLastAtByID[id] = now
+            appendSignalEvent(deviceName: newDevice.name, detail: "появилось · \(latestRSSI) dBm", kind: .neutral, now: now)
         }
 
         publishDeviceList()

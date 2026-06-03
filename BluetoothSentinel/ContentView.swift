@@ -15,6 +15,7 @@ struct ContentView: View {
                 VStack(spacing: 14) {
                     statusPanel
                     controlPanel
+                    analysisPanel
                     devicesPanel
                 }
                 .padding(16)
@@ -141,6 +142,38 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var analysisPanel: some View {
+        if !monitor.signalEvents.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("Анализ")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
+                    Spacer()
+                    Text("\(monitor.signalEvents.count)")
+                        .font(.caption.monospacedDigit().weight(.bold))
+                        .foregroundStyle(theme.secondaryText)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(theme.softFill, in: Capsule())
+                }
+
+                VStack(spacing: 7) {
+                    ForEach(monitor.signalEvents.prefix(5)) { event in
+                        SignalEventRow(event: event, theme: theme)
+                    }
+                }
+            }
+            .padding(14)
+            .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(theme.cardStroke)
+            }
+        }
+    }
+
     private var statusColor: Color {
         monitor.isScanning ? .green : .secondary
     }
@@ -196,6 +229,13 @@ struct CompactDeviceRow: View {
                         .foregroundStyle(distanceColor)
                 }
             }
+
+            VStack(alignment: .trailing, spacing: 4) {
+                SignalHistoryBars(samples: Array(device.signalSamples.suffix(14)), color: signalColor, theme: theme)
+                Text(device.signalTrendText)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(trendColor)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -230,6 +270,91 @@ struct CompactDeviceRow: View {
         if meters < 3 { return .green }
         if meters < 10 { return .orange }
         return theme.secondaryText
+    }
+
+    private var trendColor: Color {
+        switch device.signalTrendText {
+        case "сближение":
+            return .red
+        case "усиливается":
+            return .orange
+        case "слабеет":
+            return .blue
+        case "дрожит":
+            return .yellow
+        default:
+            return theme.secondaryText
+        }
+    }
+}
+
+struct SignalEventRow: View {
+    let event: SignalEvent
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(color)
+                .frame(width: 7, height: 7)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(event.deviceName)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(theme.primaryText)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(event.detail)
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+
+            Text(event.timestamp, format: .dateTime.hour().minute().second())
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(theme.secondaryText)
+        }
+    }
+
+    private var color: Color {
+        switch event.kind {
+        case .neutral:
+            return .blue
+        case .stronger:
+            return .orange
+        case .weaker:
+            return .teal
+        case .approaching:
+            return .red
+        }
+    }
+}
+
+struct SignalHistoryBars: View {
+    let samples: [SignalSample]
+    let color: Color
+    let theme: SentinelTheme
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 2) {
+            ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
+                Capsule()
+                    .fill(color.opacity(0.78))
+                    .frame(width: 3, height: barHeight(for: sample.rssi))
+            }
+        }
+        .frame(width: 54, height: 18, alignment: .bottomLeading)
+        .padding(.horizontal, 5)
+        .padding(.vertical, 4)
+        .background(theme.softFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
+    private func barHeight(for rssi: Int) -> CGFloat {
+        let clamped = min(max(Double(rssi), -100), -35)
+        let normalized = (clamped + 100) / 65
+        return CGFloat(4 + (normalized * 14))
     }
 }
 
