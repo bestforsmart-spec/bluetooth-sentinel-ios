@@ -235,12 +235,9 @@ struct CompactDeviceRow: View {
                     .font(.caption.monospacedDigit().weight(.semibold))
                     .foregroundStyle(signalColor)
 
-                HStack(spacing: 4) {
-                    DirectionMiniBadge(device: device, theme: theme)
-                    Text(device.displayDistanceText)
-                        .font(.caption2.monospacedDigit().weight(.bold))
-                        .foregroundStyle(distanceColor)
-                }
+                Text(device.displayDistanceText)
+                    .font(.caption2.monospacedDigit().weight(.bold))
+                    .foregroundStyle(distanceColor)
             }
 
             VStack(alignment: .trailing, spacing: 4) {
@@ -735,7 +732,7 @@ struct DeviceDetailSheet: View {
             HStack(spacing: 8) {
                 DetailMetric(title: "RSSI 8с", value: "\(device.displayRSSI)", unit: "dBm", color: signalColor, theme: theme)
                 DetailMetric(title: "Дистанция", value: device.displayDistanceText, unit: "", color: distanceColor, theme: theme)
-                DetailMetric(title: "Курс", value: device.directionShortName, unit: device.directionConfidenceText, color: directionColor, theme: theme)
+                DetailMetric(title: "Зона", value: zoneShortText, unit: "", color: distanceColor, theme: theme)
             }
 
             HStack(spacing: 8) {
@@ -795,10 +792,9 @@ struct DeviceDetailSheet: View {
     private var radioCard: some View {
         DeviceInfoSection(title: "Радиоданные", symbolName: "dot.radiowaves.left.and.right", theme: theme) {
             DeviceInfoRow(title: "Advertisement", value: device.advertisement, theme: theme)
-            DeviceInfoRow(title: "Направление", value: "\(device.directionName) · доверие \(directionConfidenceFullText)", valueColor: directionColor, theme: theme)
-            DeviceInfoRow(title: "Секторных точек", value: "\(device.directionObservationCount)", theme: theme)
             DeviceInfoRow(title: "Smoothed", value: String(format: "%.1f dBm", device.smoothedRSSI), monospace: true, theme: theme)
             DeviceInfoRow(title: "Display", value: String(format: "%.1f dBm", device.displayRSSIDouble), monospace: true, theme: theme)
+            DeviceInfoRow(title: "Raw range", value: device.recentRSSIRangeText, monospace: true, theme: theme)
         }
     }
 
@@ -862,17 +858,6 @@ struct DeviceDetailSheet: View {
         }
     }
 
-    private var directionColor: Color {
-        switch device.directionConfidence {
-        case .scanning:
-            return theme.secondaryText
-        case .low, .medium:
-            return .blue
-        case .high:
-            return .green
-        }
-    }
-
     private var jitterColor: Color {
         if device.recentRSSIJitter >= 14 { return .red }
         if device.recentRSSIJitter >= 9 { return .orange }
@@ -918,19 +903,6 @@ struct DeviceDetailSheet: View {
         }
     }
 
-    private var directionConfidenceFullText: String {
-        switch device.directionConfidence {
-        case .scanning:
-            return "скан"
-        case .low:
-            return "низкая"
-        case .medium:
-            return "средняя"
-        case .high:
-            return "высокая"
-        }
-    }
-
     private var observedDurationText: String {
         let seconds = max(0, Int(device.lastSeen.timeIntervalSince(device.firstSeen)))
         if seconds < 60 { return "\(seconds) сек" }
@@ -938,6 +910,21 @@ struct DeviceDetailSheet: View {
         let remainder = seconds % 60
         if minutes < 60 { return "\(minutes) мин \(remainder) сек" }
         return "\(minutes / 60) ч \(minutes % 60) мин"
+    }
+
+    private var zoneShortText: String {
+        switch device.detectionZone {
+        case .immediate:
+            return "очень близко"
+        case .close:
+            return "близко"
+        case .far:
+            return "далеко"
+        case .edge:
+            return "край"
+        case .unknown:
+            return "--"
+        }
     }
 
     private var deviceSummary: String {
@@ -950,7 +937,7 @@ struct DeviceDetailSheet: View {
             "RSSI display: \(device.displayRSSI) dBm",
             "RSSI raw: \(device.rssi) dBm",
             "Distance: \(device.displayDistanceText)",
-            "Direction: \(device.directionName) (\(directionConfidenceFullText))",
+            "Zone: \(device.detectionZone.title)",
             "Trend: \(device.signalTrendText)",
             "Advertisement: \(device.advertisement)"
         ].joined(separator: "\n")
@@ -1201,53 +1188,6 @@ struct SignalDot: View {
                 .frame(width: 9, height: 9)
         }
         .frame(width: 28, height: 28)
-    }
-}
-
-struct DirectionMiniBadge: View {
-    let device: DetectedDevice
-    let theme: SentinelTheme
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: device.directionArrowDegrees == nil ? "location.north.line" : "location.north.fill")
-                .font(.caption2)
-                .rotationEffect(.degrees(device.directionArrowDegrees ?? 0))
-            Text(device.directionShortName)
-                .font(.caption2.weight(.bold))
-            if device.directionConfidence != .scanning {
-                Text(device.directionConfidenceText)
-                    .font(.caption2.weight(.medium))
-            }
-        }
-        .foregroundStyle(directionColor)
-        .accessibilityLabel("Направление \(device.directionName), уверенность \(accessibilityConfidence)")
-    }
-
-    private var directionColor: Color {
-        switch device.directionConfidence {
-        case .scanning:
-            return theme.secondaryText
-        case .low:
-            return .blue.opacity(0.72)
-        case .medium:
-            return .blue
-        case .high:
-            return .green
-        }
-    }
-
-    private var accessibilityConfidence: String {
-        switch device.directionConfidence {
-        case .scanning:
-            return "сканирование"
-        case .low:
-            return "низкая"
-        case .medium:
-            return "средняя"
-        case .high:
-            return "высокая"
-        }
     }
 }
 

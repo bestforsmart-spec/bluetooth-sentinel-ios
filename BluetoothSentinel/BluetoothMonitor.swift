@@ -1,5 +1,4 @@
 import CoreBluetooth
-import CoreLocation
 import Foundation
 import UIKit
 import UserNotifications
@@ -22,13 +21,6 @@ enum SignalEventKind: Equatable {
     case stronger
     case weaker
     case approaching
-}
-
-enum DirectionConfidence: Equatable {
-    case scanning
-    case low
-    case medium
-    case high
 }
 
 struct SignalEvent: Identifiable, Equatable {
@@ -141,10 +133,6 @@ struct DetectedDevice: Identifiable, Equatable {
     var smoothedRSSI: Double
     var displayFilteredRSSI: Double
     var lastDisplayRSSIUpdateAt: Date
-    var strongestHeadingDegrees: Double?
-    var strongestHeadingRSSI: Double?
-    var directionSectorRSSIs: [Double?]
-    var directionObservationCount: Int
     var firstSeen: Date
     var lastSeen: Date
     var advertisement: String
@@ -200,40 +188,6 @@ struct DetectedDevice: Identifiable, Equatable {
         }
 
         return "~100+ м"
-    }
-
-    var directionName: String {
-        guard let heading = strongestHeadingDegrees,
-              directionConfidence != .scanning else { return "Скан" }
-        return CompassDirection.name(for: heading)
-    }
-
-    var directionShortName: String {
-        guard let heading = strongestHeadingDegrees,
-              directionConfidence != .scanning else { return "скан" }
-        return CompassDirection.shortName(for: heading)
-    }
-
-    var directionArrowDegrees: Double? {
-        guard directionConfidence != .scanning else { return nil }
-        return strongestHeadingDegrees
-    }
-
-    var directionConfidence: DirectionConfidence {
-        CompassDirection.confidence(from: directionSectorRSSIs, observations: directionObservationCount)
-    }
-
-    var directionConfidenceText: String {
-        switch directionConfidence {
-        case .scanning:
-            return "--"
-        case .low:
-            return "низк"
-        case .medium:
-            return "сред"
-        case .high:
-            return "выс"
-        }
     }
 
     var detectionZone: DetectionZone {
@@ -507,7 +461,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private static let blackBoxEventLimit = 200
     private static let signalEventRSSIThreshold = 8
     private static let signalEventMinimumSpacing: TimeInterval = 8
-    private static let directionSectorCount = 8
     private static let initialBaselineDuration: TimeInterval = 60
     private static let packetFreshInterval: TimeInterval = 8
     private static let alertsEnabledKey = "alertsEnabled"
@@ -527,7 +480,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     @Published private(set) var lastAlertAt: Date?
     @Published private(set) var lastPacketAt: Date?
     @Published private(set) var packetCount = 0
-    @Published private(set) var headingDegrees: Double?
     @Published var alertsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(alertsEnabled, forKey: Self.alertsEnabledKey)
@@ -582,7 +534,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private let trustedDevicesKey = "trustedBluetoothDeviceIDs"
     private let notificationCenter = BluetoothAlertNotificationCenter()
     private let soundPlayer = AlertSoundPlayer()
-    private let locationManager = CLLocationManager()
     private var centralManager: CBCentralManager?
     private var quietDeviceIDs: Set<String>
     private var knownDeviceIDs: Set<String>
@@ -628,8 +579,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.alertsEnabledKey)
         UserDefaults.standard.set(true, forKey: Self.fieldModeEnabledKey)
         UserDefaults.standard.set(true, forKey: Self.maximumSensitivityEnabledKey)
-        self.locationManager.delegate = self
-        self.locationManager.headingFilter = 5
         self.centralManager = CBCentralManager(
             delegate: self,
             queue: .main,
@@ -638,7 +587,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
             ]
         )
         notificationCenter.requestAuthorization()
-        startHeadingUpdatesIfPossible()
         startAutoRememberTimer()
         startScanRefreshTimer()
         startStaleCleanupTimer()
@@ -771,12 +719,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 level: initialBaselineCompleted ? .nominal : .warning
             ),
             InstrumentCheck(
-                id: "compass",
-                title: "Компас",
-                detail: headingDegrees == nil ? "направление не готово" : "курс доступен",
-                level: headingDegrees == nil ? .warning : .nominal
-            ),
-            InstrumentCheck(
                 id: "background",
                 title: "Фон",
                 detail: appIsActive ? "экран активен" : "iOS ограничивает фон",
@@ -818,12 +760,10 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     func confidence(for device: DetectedDevice) -> AlertConfidence {
         let sampleCount = device.signalSamples.count
         let jitter = device.recentRSSIJitter
-        let directionConfidence = device.directionConfidence
 
         if device.approachState == .approaching,
            sampleCount >= 12,
-           jitter <= 9,
-           (directionConfidence == .medium || directionConfidence == .high) {
+           jitter <= 9 {
             return .high
         }
 
@@ -1366,55 +1306,6 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         publishDeviceList(force: true, now: now)
     }
 
-    private func startHeadingUpdatesIfPossible() {
-        guard CLLocationManager.headingAvailable() else { return }
-
-        switch locationManager.authorizationStatus {
-        case .notDetermined:
-            locationManager.requestWhenInUseAuthorization()
-        case .authorizedAlways, .authorizedWhenInUse:
-            locationManager.startUpdatingHeading()
-        case .denied, .restricted:
-            break
-        @unknown default:
-            break
-        }
-    }
-
-    private func updateDirectionEstimate(for device: inout DetectedDevice) {
-        guard let headingDegrees else { return }
-
-        let currentRSSI = device.smoothedRSSI
-
-        if device.directionSectorRSSIs.count != Self.directionSectorCount {
-            device.directionSectorRSSIs = Array(repeating: nil, count: Self.directionSectorCount)
-        }
-
-        let sector = CompassDirection.sectorIndex(for: headingDegrees)
-        if let sectorRSSI = device.directionSectorRSSIs[sector] {
-            device.directionSectorRSSIs[sector] = max(sectorRSSI, currentRSSI)
-        } else {
-            device.directionSectorRSSIs[sector] = currentRSSI
-        }
-        device.directionObservationCount += 1
-
-        guard let estimate = CompassDirection.estimate(from: device.directionSectorRSSIs, observations: device.directionObservationCount) else {
-            device.strongestHeadingRSSI = nil
-            device.strongestHeadingDegrees = nil
-            return
-        }
-
-        if let strongestHeading = device.strongestHeadingDegrees {
-            device.strongestHeadingDegrees = CompassDirection.blendDegrees(
-                from: strongestHeading,
-                to: estimate.headingDegrees,
-                weight: 0.18
-            )
-        } else {
-            device.strongestHeadingDegrees = estimate.headingDegrees
-        }
-        device.strongestHeadingRSSI = estimate.bestRSSI
-    }
 }
 
 extension BluetoothMonitor: CBCentralManagerDelegate {
@@ -1477,7 +1368,6 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 deadband: Self.displayRSSIDeadband,
                 minimumInterval: Self.displayRSSIMinimumUpdateInterval
             )
-            updateDirectionEstimate(for: &existing)
             existing.lastSeen = now
             existing.advertisement = summary
             existing.trustState = currentTrustState
@@ -1514,10 +1404,6 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
                 smoothedRSSI: Double(latestRSSI),
                 displayFilteredRSSI: Double(latestRSSI),
                 lastDisplayRSSIUpdateAt: now,
-                strongestHeadingDegrees: nil,
-                strongestHeadingRSSI: nil,
-                directionSectorRSSIs: Array(repeating: nil, count: Self.directionSectorCount),
-                directionObservationCount: 0,
                 firstSeen: now,
                 lastSeen: now,
                 advertisement: summary,
@@ -1553,23 +1439,6 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
     }
 }
 
-extension BluetoothMonitor: CLLocationManagerDelegate {
-    func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        startHeadingUpdatesIfPossible()
-    }
-
-    func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
-        guard newHeading.headingAccuracy >= 0 else { return }
-
-        let heading = newHeading.trueHeading >= 0 ? newHeading.trueHeading : newHeading.magneticHeading
-        headingDegrees = CompassDirection.normalize(heading)
-    }
-
-    func locationManagerShouldDisplayHeadingCalibration(_ manager: CLLocationManager) -> Bool {
-        true
-    }
-}
-
 final class BluetoothAlertNotificationCenter {
     private let center = UNUserNotificationCenter.current()
 
@@ -1580,7 +1449,7 @@ final class BluetoothAlertNotificationCenter {
     func postDeviceAlert(_ device: DetectedDevice, vibrationOnly: Bool) {
         let content = UNMutableNotificationContent()
         content.title = "Устройство приближается"
-        content.body = "\(device.name): сигнал усилился, \(device.estimatedDistanceText), \(device.directionName)"
+        content.body = "\(device.name): сигнал усилился, \(device.estimatedDistanceText)"
         content.categoryIdentifier = "bluetooth-device-alert"
         if !vibrationOnly {
             content.sound = .default
@@ -1604,109 +1473,6 @@ enum BluetoothDistanceEstimator {
 
         let exponent = (referenceRSSIAtOneMeter - rssi) / (10.0 * indoorPathLossExponent)
         return min(max(pow(10.0, exponent), 0.2), 120.0)
-    }
-}
-
-struct CompassDirectionEstimate {
-    let headingDegrees: Double
-    let bestRSSI: Double
-    let confidence: DirectionConfidence
-}
-
-enum CompassDirection {
-    private static let names = [
-        "Север",
-        "Северо-восток",
-        "Восток",
-        "Юго-восток",
-        "Юг",
-        "Юго-запад",
-        "Запад",
-        "Северо-запад"
-    ]
-
-    private static let shortNames = [
-        "С",
-        "СВ",
-        "В",
-        "ЮВ",
-        "Ю",
-        "ЮЗ",
-        "З",
-        "СЗ"
-    ]
-
-    private static let minimumObservations = 6
-    private static let minimumScannedSectors = 3
-    private static let minimumSignalGap = 4.0
-    private static let mediumSignalGap = 6.5
-    private static let highSignalGap = 9.0
-
-    static func name(for degrees: Double) -> String {
-        names[index(for: degrees)]
-    }
-
-    static func shortName(for degrees: Double) -> String {
-        shortNames[index(for: degrees)]
-    }
-
-    static func normalize(_ degrees: Double) -> Double {
-        let value = degrees.truncatingRemainder(dividingBy: 360)
-        return value >= 0 ? value : value + 360
-    }
-
-    static func blendDegrees(from start: Double, to end: Double, weight: Double) -> Double {
-        let startRadians = start * .pi / 180
-        let endRadians = end * .pi / 180
-        let x = ((1 - weight) * cos(startRadians)) + (weight * cos(endRadians))
-        let y = ((1 - weight) * sin(startRadians)) + (weight * sin(endRadians))
-        return normalize(atan2(y, x) * 180 / .pi)
-    }
-
-    static func sectorIndex(for degrees: Double) -> Int {
-        index(for: degrees)
-    }
-
-    static func estimate(from sectorRSSIs: [Double?], observations: Int) -> CompassDirectionEstimate? {
-        let indexedRSSIs = sectorRSSIs.enumerated().compactMap { index, rssi -> (index: Int, rssi: Double)? in
-            guard let rssi else { return nil }
-            return (index, rssi)
-        }
-        guard observations >= minimumObservations,
-              indexedRSSIs.count >= minimumScannedSectors,
-              let best = indexedRSSIs.max(by: { $0.rssi < $1.rssi }) else {
-            return nil
-        }
-
-        let secondBestRSSI = indexedRSSIs
-            .filter { $0.index != best.index }
-            .map(\.rssi)
-            .max() ?? -120
-        let gap = best.rssi - secondBestRSSI
-        guard gap >= minimumSignalGap else { return nil }
-
-        let confidence: DirectionConfidence
-        if observations >= 14, indexedRSSIs.count >= 4, gap >= highSignalGap {
-            confidence = .high
-        } else if observations >= 10, gap >= mediumSignalGap {
-            confidence = .medium
-        } else {
-            confidence = .low
-        }
-
-        return CompassDirectionEstimate(
-            headingDegrees: Double(best.index) * 45,
-            bestRSSI: best.rssi,
-            confidence: confidence
-        )
-    }
-
-    static func confidence(from sectorRSSIs: [Double?], observations: Int) -> DirectionConfidence {
-        estimate(from: sectorRSSIs, observations: observations)?.confidence ?? .scanning
-    }
-
-    private static func index(for degrees: Double) -> Int {
-        Int((normalize(degrees) + 22.5) / 45.0) % names.count
     }
 }
 
