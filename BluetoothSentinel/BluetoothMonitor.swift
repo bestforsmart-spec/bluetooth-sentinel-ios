@@ -715,6 +715,24 @@ final class BluetoothMonitor: NSObject, ObservableObject {
                 level: isLowPowerMode ? .warning : .nominal
             ),
             InstrumentCheck(
+                id: "ble_stealth",
+                title: "BLE-след",
+                detail: "приложение только слушает",
+                level: .nominal
+            ),
+            InstrumentCheck(
+                id: "wifi_stealth",
+                title: "Wi-Fi след",
+                detail: "контролируется iOS вручную",
+                level: .warning
+            ),
+            InstrumentCheck(
+                id: "system_stealth",
+                title: "Системный след",
+                detail: "AirDrop/Hotspot вне контроля",
+                level: .warning
+            ),
+            InstrumentCheck(
                 id: "external",
                 title: "Внешний сенсор",
                 detail: externalSensorEnabled ? "ожидание источника" : "не подключен",
@@ -753,6 +771,7 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         isScanning = true
         applyMaximumSensitivityPowerMode()
         appendBlackBoxEvent(title: "Скан запущен", detail: "дубликаты BLE включены", level: .nominal)
+        appendBlackBoxEvent(title: "BLE-стелс", detail: "режим central scan, реклама приложением не запускается", level: .nominal)
     }
 
     func stopScanning() {

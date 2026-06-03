@@ -588,6 +588,22 @@ struct InstrumentSheetView: View {
                         .stroke(theme.cardStroke)
                 }
 
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Стелс-профиль", systemImage: "eye.slash.fill")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(theme.primaryText)
+                    Text("BT Sentinel не запускает BLE-рекламу и не держит Wi-Fi соединение. Полная радионевидимость телефона зависит от системных служб iOS и ручного отключения Wi-Fi, AirDrop и Hotspot.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(theme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .background(theme.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(theme.cardStroke)
+                }
+
                 VStack(alignment: .leading, spacing: 10) {
                     Toggle(isOn: $monitor.externalSensorEnabled) {
                         VStack(alignment: .leading, spacing: 2) {
