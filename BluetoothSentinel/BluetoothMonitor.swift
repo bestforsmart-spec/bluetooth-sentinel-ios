@@ -542,8 +542,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
     private var devicesByID: [String: DetectedDevice] = [:]
     private var deviceOrder: [String] = []
     private var sessionNewDeviceIDs: Set<String> = []
-    private var unnamedNewDeviceLabelsByID: [String: String] = [:]
-    private var nextUnnamedNewDeviceNumber = 1
+    private var unnamedDeviceLabelsByID: [String: String] = [:]
+    private var nextUnnamedDeviceNumber = 1
     private var discoveryAlertedDeviceIDs: Set<String> = []
     private var approachAlertedDeviceIDs: Set<String> = []
     private var approachReferenceDistanceByID: [String: Double] = [:]
@@ -847,8 +847,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         devicesByID.removeAll()
         deviceOrder.removeAll()
         sessionNewDeviceIDs.removeAll()
-        unnamedNewDeviceLabelsByID.removeAll()
-        nextUnnamedNewDeviceNumber = 1
+        unnamedDeviceLabelsByID.removeAll()
+        nextUnnamedDeviceNumber = 1
         discoveryAlertedDeviceIDs.removeAll()
         devices.removeAll()
         approachAlertedDeviceIDs.removeAll()
@@ -878,8 +878,8 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         initialBaselineStartedAt = nil
         UserDefaults.standard.set(false, forKey: Self.initialBaselineCompletedKey)
         initialBaselineTimer?.invalidate()
-        unnamedNewDeviceLabelsByID.removeAll()
-        nextUnnamedNewDeviceNumber = 1
+        unnamedDeviceLabelsByID.removeAll()
+        nextUnnamedDeviceNumber = 1
         discoveryAlertedDeviceIDs.removeAll()
         approachAlertedDeviceIDs.removeAll()
         approachReferenceDistanceByID.removeAll()
@@ -948,22 +948,18 @@ final class BluetoothMonitor: NSObject, ObservableObject {
         return .unknown
     }
 
-    private func displayName(for id: String, rawName: String, trustState: DeviceTrustState) -> String {
+    private func displayName(for id: String, rawName: String) -> String {
         guard isUnidentifiedName(rawName) else {
             return rawName
         }
 
-        if let existingLabel = unnamedNewDeviceLabelsByID[id] {
+        if let existingLabel = unnamedDeviceLabelsByID[id] {
             return existingLabel
         }
 
-        guard trustState == .unknown else {
-            return rawName
-        }
-
-        let label = "Новый \(nextUnnamedNewDeviceNumber)"
-        nextUnnamedNewDeviceNumber += 1
-        unnamedNewDeviceLabelsByID[id] = label
+        let label = "Новый \(nextUnnamedDeviceNumber)"
+        nextUnnamedDeviceNumber += 1
+        unnamedDeviceLabelsByID[id] = label
         return label
     }
 
@@ -1427,7 +1423,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
         if var existing = devicesByID[id] {
             let latestRSSI = RSSI.intValue
             let previousRSSI = existing.rssi
-            existing.name = displayName(for: id, rawName: rawName, trustState: currentTrustState)
+            existing.name = displayName(for: id, rawName: rawName)
             existing.deviceKind = deviceKind
             existing.rssi = latestRSSI
             existing.smoothedRSSI = (existing.smoothedRSSI * 0.72) + (Double(latestRSSI) * 0.28)
@@ -1467,7 +1463,7 @@ extension BluetoothMonitor: CBCentralManagerDelegate {
             let latestRSSI = RSSI.intValue
             let newDevice = DetectedDevice(
                 id: id,
-                name: displayName(for: id, rawName: rawName, trustState: currentTrustState),
+                name: displayName(for: id, rawName: rawName),
                 deviceKind: deviceKind,
                 rssi: latestRSSI,
                 smoothedRSSI: Double(latestRSSI),
